@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ОПЭА - РАЗРАБОТЧИК</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <style>
+        body {
+            background-color: #020617; color: #f8fafc; font-family: 'Inter', sans-serif;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100dvh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center;
+        }
+        .card {
+            background: #0f172a; border: 2px solid #1e293b; border-radius: 16px;
+            padding: 30px 20px; max-width: 360px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 4px solid #1e293b; border-top: 4px solid #38bdf8;
+            border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        h3 { margin: 0 0 10px 0; font-size: 18px; color: #e0f2fe; }
+        p { font-size: 13px; color: #94a3b8; line-height: 1.4; margin: 0 0 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="card" id="loader-card">
+        <div class="spinner" id="spinner"></div>
+        <h3 id="status-title">Запуск ОПЭА...</h3>
+        <p id="status-desc">Проверка режима доступа</p>
+    </div>
+
+    <script>
+        const SCRIPT_URL = 'ВСТАВЬ_СЮДА_URL_ТВОЕГО_GOOGLE_APPS_SCRIPT';
+
+        // Базовая защита от сохранения страницы и клавиши F12
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('keydown', e => {
+            if (e.key === 'F12' || (e.ctrlKey && ['s','u','S','U'].includes(e.key))) e.preventDefault();
+        });
+
+        async function initApp() {
+            const tg = window.Telegram.WebApp;
+            tg.expand();
+            const userId = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null;
+
+            if (!userId) {
+                document.getElementById('spinner').style.display = 'none';
+                document.getElementById('status-title').innerText = 'Откройте в Telegram';
+                document.getElementById('status-desc').innerText = 'Симулятор работает только внутри официального Telegram-бота.';
+                return;
+            }
+
+            try {
+                const res = await fetch(`${SCRIPT_URL}?action=verify&uid=${userId}`);
+                const data = await res.json();
+
+                if (data.tier === 'FULL' && data.secretKey) {
+                    // У пользователя активен 1 день демо ИЛИ платная подписка -> расшифровываем ПОЛНУЮ версию!
+                    document.getElementById('status-title').innerText = 'Загрузка PRO-версии...';
+                    const encRes = await fetch('full.enc');
+                    const cipherText = await encRes.text();
+                    const decryptedHtml = CryptoJS.AES.decrypt(cipherText.trim(), data.secretKey).toString(CryptoJS.enc.Utf8);
+                    renderAppHtml(decryptedHtml);
+                } else {
+                    // Запускаем постоянную БЕСПЛАТНУЮ версию!
+                    document.getElementById('status-title').innerText = 'Загрузка Бесплатной версии...';
+                    const freeRes = await fetch('free.html');
+                    const freeHtml = await freeRes.text();
+                    renderAppHtml(freeHtml);
+                }
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status-title').innerText = 'Ошибка сети';
+                document.getElementById('status-desc').innerText = 'Попробуйте перезапустить окно симулятора.';
+            }
+        }
+
+        function renderAppHtml(fullHtmlDocument) {
+            document.open();
+            document.write(fullHtmlDocument);
+            document.close();
+        }
+
+        window.onload = initApp;
+    </script>
+</body>
+</html>

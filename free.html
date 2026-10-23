@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Мастер сборки ОПЭА для GitHub (free.html + full.enc + index.html)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <style>
+        body { background: #020617; color: #f8fafc; font-family: 'Segoe UI', sans-serif; padding: 30px; display: flex; justify-content: center; }
+        .box { background: #0f172a; border: 2px solid #38bdf8; border-radius: 16px; padding: 28px; max-width: 620px; width: 100%; box-shadow: 0 15px 40px rgba(0,0,0,0.8); }
+        h2 { margin-top: 0; color: #38bdf8; }
+        label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; font-weight: bold; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #fff; margin-bottom: 16px; box-sizing: border-box; }
+        .btn { display: block; width: 100%; padding: 13px; margin-bottom: 12px; border: none; border-radius: 10px; font-weight: 800; font-size: 14px; cursor: pointer; color: #fff; text-align: center; transition: 0.15s; }
+        .btn:active { transform: scale(0.98); }
+        .btn-1 { background: #0284c7; } .btn-1:hover { background: #0369a1; }
+        .btn-2 { background: #16a34a; } .btn-2:hover { background: #15803d; }
+        .btn-3 { background: #7c3aed; } .btn-3:hover { background: #6d28d9; }
+        .status { font-size: 13px; color: #4ade80; margin-top: 10px; font-weight: bold; min-height: 20px; }
+    </style>
+</head>
+<body>
+<div class="box">
+    <h2>🛠️ Сборщик файлов ОПЭА для GitHub</h2>
+
+    <label>1. Выбери свой полный файл симулятора (app.html):</label>
+    <input type="file" id="sourceFile" accept=".html">
+
+    <label>2. Секретный ключ шифрования (должен совпадать с SECRET_PAYLOAD_KEY в боте):</label>
+    <input type="text" id="secretKey" value="OPEA_PRO_KEY_2026_SECRET">
+
+    <label>3. URL твоего Google Apps Script (можно вставить сейчас или позже на GitHub):</label>
+    <input type="text" id="scriptUrl" placeholder="https://script.google.com/macros/s/.../exec">
+
+    <button class="btn btn-1" onclick="buildFreeVersion()">1️⃣ Создать и скачать урезанную демо-версию (free.html)</button>
+    <button class="btn btn-2" onclick="buildEncryptedFull()">2️⃣ Зашифровать полную версию и скачать (full.enc)</button>
+    <button class="btn btn-3" onclick="buildIndexLoader()">3️⃣ Скачать защитный загрузчик (index.html)</button>
+
+    <div class="status" id="statusMsg"></div>
+</div>
+
+<script>
+function setStatus(msg) {
+    document.getElementById('statusMsg').innerText = msg;
+}
+
+function downloadBlob(content, filename) {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+// 1. Генерация урезанной версии free.html (без кода ГОСТ PDF и с лимитами)
+function buildFreeVersion() {
+    const file = document.getElementById('sourceFile').files[0];
+    if (!file) return alert('Сначала выберите полный файл симулятора (app.html)!');
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        let raw = e.target.result;
+
+        // Отрезаем весь секретный блок генератора чертежей PDF по ГОСТ
+        const pdfStartIdx = raw.indexOf('function drawGostFrameAndStamp');
+        if (pdfStartIdx === -1) {
+            return alert('Не найден блок генератора PDF в файле. Убедитесь, что выбран полный файл симулятора!');
+        }
+        let baseCode = raw.substring(0, pdfStartIdx);
+
+        // Меняем заголовок шапки на ДЕМО-ВЕРСИЮ
+        baseCode = baseCode.replace(
+            '>ОПЭА - РАЗРАБОТЧИК</div>',
+            '>ОПЭА — ДЕМО <span style="background:#f59e0b;color:#020617;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:4px;">FREE</span></div>'
+        );
+
+        const demoPatch = `
+        // =========================================================================
+        // КОНТРОЛЛЕР ОЗНАКОМИТЕЛЬНОЙ ДЕМО-ВЕРСИИ (FREE)
+        // =========================================================================
+        const DEMO_MAX_USER_COMPS = 5; // 2 ввода + максимум 3 прибора от пользователя
+        const DEMO_MAX_WIRES = 5;      // Максимум 5 проводов
+        const DEMO_ALLOWED_IDS = new Set([
+            'In_380', 'In_220', 'Breaker1P', 'Contactor220', 'BtnGreen', 'BtnRed', 'Lamp220G', 'TermBlock'
+        ]);
+
+        // Встраиваем модальное окно перехода на PRO
+        (function injectProModal() {
+            const modalHtml = \`
+            <div id="pro-overlay" class="modal-overlay" onclick="closeProModal()">
+                <div class="modal-card" onclick="event.stopPropagation()" style="max-width:460px; border-color:#f59e0b;">
+                    <button onclick="closeProModal()" style="position:absolute; top:12px; right:14px; background:none; border:none; color:#f87171; font-size:22px; font-weight:bold; cursor:pointer; line-height:1;">✖</button>
+                    <div style="font-size:10px; font-weight:900; color:#f59e0b; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">🔒 Ограничение бесплатной версии</div>
+                    <div id="pro-reason" style="font-size:15px; font-weight:900; color:#fef08a; margin-bottom:10px; line-height:1.3;"></div>
+                    <div style="font-size:12.5px; color:#e2e8f0; line-height:1.5; background:#020617; padding:12px; border-radius:10px; border:1px solid #1e293b; margin-bottom:14px;">
+                        <div style="font-weight:800; color:#38bdf8; margin-bottom:6px;">Что открывает ПОЛНАЯ ВЕРСИЯ (PRO):</div>
+                        <div>✅ <b>Без ограничений:</b> любое количество приборов, проводов и DIN-реек.</div>
+                        <div>✅ <b>Все 70+ приборов в 10 категориях:</b> ПЧ, ПЛК LOGO!, ТРМ-202, пожарная автоматика «Болид», искрозащита [Ex ia], КИПиА 4–20 мА, АВР, УПП и др.</div>
+                        <div>✅ <b>Чертежи PDF по ГОСТ (А3):</b> автогенерация принципиальных схем Э3 и спецификации со штампом ЕСКД.</div>
+                        <div>✅ <b>Сохранение проектов (.JSON):</b> сохранение и загрузка своих схем.</div>
+                    </div>
+                    <div style="background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.4); border-radius:8px; padding:9px; font-size:12px; color:#fde68a; text-align:center; margin-bottom:12px; font-weight:700;">
+                        🎁 В Telegram-боте вы можете бесплатно включить ПОЛНУЮ ВЕРСИЮ на 1 день (24 часа)!
+                    </div>
+                    <button class="btn active" style="width:100%; padding:11px; font-size:13px; background:#d97706; box-shadow:0 0 0 1.5px #fbbf24; margin-bottom:6px;" onclick="goToTelegramBotPro()">🚀 Активировать PRO в Telegram-боте</button>
+                    <button class="btn" style="width:100%; padding:9px; font-size:12px;" onclick="closeProModal()">Продолжить осмотр демо-версии</button>
+                </div>
+            </div>\`;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+        })();
+
+        window.openProModal = (reason) => {
+            SoundFX.shortCircuit();
+            const rEl = document.getElementById('pro-reason');
+            if (rEl) rEl.innerText = reason || 'Эта функция доступна только в Полной версии (PRO)';
+            document.getElementById('pro-overlay').classList.add('show');
+        };
+        window.closeProModal = () => {
+            document.getElementById('pro-overlay').classList.remove('show');
+        };
+        window.goToTelegramBotPro = () => {
+            if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.close) {
+                window.Telegram.WebApp.close();
+            } else {
+                closeProModal();
+                showNotification('Вернитесь в чат Telegram-бота и нажмите «Включить ПОЛНУЮ версию»', 'info', 3500);
+            }
+        };
+
+        // Отключаем сохранение, импорт, экспорт ГОСТ PDF и добавление DIN-реек
+        saveToLocalStorage = function() {};
+        loadFromLocalStorage = function() { return false; };
+        window.exportProjectJSON = () => openProModal('Сохранение схем в файл (.JSON) доступно в полной версии (PRO)');
+        window.triggerImportJSON = () => openProModal('Загрузка схем из файла (.JSON) доступна в полной версии (PRO)');
+        window.exportGostPDF = () => openProModal('Генерация чертежей схем Э3 и спецификации в PDF по ГОСТ доступна в полной версии (PRO)');
+        window.addDinRail = () => openProModal('В бесплатной версии доступно только 2 DIN-рейки. Безлимит реек — в версии PRO!');
+
+        // Переопределяем каталог: все приборы видны, но кроме 6 базовых помечены замком PRO
+        populateCatalog = function() {
+            const list = document.getElementById('catalog-list'); list.innerHTML = '';
+            const groups = {};
+            Object.keys(CATEGORIES).forEach(k => groups[k] = []);
+            Object.keys(LIB).forEach(key => { if(LIB[key].cat && groups[LIB[key].cat]) groups[LIB[key].cat].push({id: key, ...LIB[key]}); });
+
+            Object.keys(CATEGORIES).forEach((catKey, index) => {
+                const group = document.createElement('div'); group.className = 'acc-group ' + (index === 0 ? 'open' : '');
+                const header = document.createElement('div'); header.className = 'acc-header';
+                header.innerText = CATEGORIES[catKey];
+                header.onclick = () => {
+                    const isOpen = group.classList.contains('open');
+                    document.querySelectorAll('.acc-group').forEach(g => g.classList.remove('open'));
+                    if(!isOpen) group.classList.add('open');
+                };
+
+                const body = document.createElement('div'); body.className = 'acc-body';
+                groups[catKey].forEach(d => {
+                    const isAllowed = DEMO_ALLOWED_ITEMS.has(d.id);
+                    const item = document.createElement('div');
+                    item.className = 'cat-item';
+                    if (!isAllowed) item.style.opacity = '0.82';
+
+                    const badgeHtml = isAllowed
+                        ? '<div class="cat-w" style="background:#064e3b; color:#4ade80; border:1px solid #22c55e;">ДЕМО</div>'
+                        : '<div class="cat-w" style="background:#451a03; color:#fbbf24; border:1px solid #f59e0b;">🔒 PRO</div>';
+
+                    item.innerHTML = '<div><div class="cat-title">' + d.prefix + ' • ' + d.title + '</div><div class="cat-desc">' + d.desc + '</div></div>' + badgeHtml;
+
+                    let catPressTimer = null;
+                    item.addEventListener('mousedown', (e) => { if (e.button !== 0) return; clearTimeout(catPressTimer); catPressTimer = setTimeout(() => { openPassport(d.id); }, 1000); });
+                    item.addEventListener('mouseup', () => { clearTimeout(catPressTimer); });
+                    item.addEventListener('mouseleave', () => { clearTimeout(catPressTimer); });
+                    item.addEventListener('touchstart', () => { clearTimeout(catPressTimer); catPressTimer = setTimeout(() => { openPassport(d.id); }, 1000); }, { passive: true });
+                    item.addEventListener('touchend', () => { clearTimeout(catPressTimer); });
+                    item.addEventListener('touchmove', () => { clearTimeout(catPressTimer); });
+
+                    item.onclick = () => {
+                        if (suppressNextClick) return;
+                        if (!isAllowed) {
+                            closeCatalog(false);
+                            openProModal('Прибор «' + d.title + '» доступен в Полной версии (PRO)');
+                            return;
+                        }
+                        SoundFX.button(true);
+                        buildItem = d.id;
+                        closeCatalog(true);
+                        calculateDropZones();
+                    };
+                    body.appendChild(item);
+                });
+
+                group.appendChild(header); group.appendChild(body);
+                list.appendChild(group);
+            });
+        };
+        const DEMO_ALLOWED_ITEMS = DEMO_ALLOWED_IDS;
+
+        // Ограничиваем число приборов на щите (максимум 3 добавленных пользователем прибора)
+        const _origPlaceOrMoveAt = placeOrMoveAt;
+        placeOrMoveAt = function(targetRow, startX, shiftRightFromX = null) {
+            const isMoving = (mode === 'move' && movingComp);
+            if (!isMoving && components.length >= DEMO_MAX_USER_COMPS) {
+                setMode('wire');
+                openProModal('В демо-версии можно установить не более 3 приборов на щит (доступно в PRO)');
+                return;
+            }
+            return _origPlaceOrMoveAt(targetRow, startX, shiftRightFromX);
+        };
+
+        // Ограничиваем число проводов (максимум 5 проводов)
+        const _origHandleWire = handleWire;
+        handleWire = function(comp, tid, elem) {
+            if (mode === 'wire' && selectedTerminal && !(selectedTerminal.comp.id === comp.id && selectedTerminal.tid === tid)) {
+                if (wires.length >= DEMO_MAX_WIRES) {
+                    selectedTerminal.elem.classList.remove('selected');
+                    selectedTerminal = null;
+                    openProModal('В демо-версии можно проложить не более ' + DEMO_MAX_WIRES + ' проводов (безлимит — в PRO)');
+                    return;
+                }
+            }
+            return _origHandleWire(comp, tid, elem);
+        };
+
+        // В демо-версии оставляем только 2 DIN-рейки
+        const _origInitSandbox = initSandbox;
+        initSandbox = function() {
+            _origInitSandbox();
+            numRows = 2;
+            drawBackground();
+            drawWires();
+        };
+
+        window.addEventListener('resize', () => {
+            drawBackground();
+            drawWires();
+        });
+
+        window.addEventListener('load', () => {
+            initSandbox();
+            setTimeout(() => {
+                showNotification('🔒 Демо-режим: до 3 приборов и 5 проводов. Полная версия — 1 день бесплатно в боте!', 'info', 4200);
+            }, 400);
+        });
+        <\/script>
+        <\/body>
+        <\/html>`;
+
+        const finalFreeHtml = baseCode + demoPatch;
+        downloadBlob(finalFreeHtml, 'free.html');
+        setStatus('✅ Урезанная демо-версия free.html успешно создана и скачана!');
+    };
+    reader.readAsText(file);
+}
+
+// 2. Шифрование полной версии в full.enc (AES-256)
+function buildEncryptedFull() {
+    const file = document.getElementById('sourceFile').files[0];
+    const key = document.getElementById('secretKey').value.trim();
+    if (!file) return alert('Сначала выберите полный файл симулятора (app.html)!');
+    if (!key) return alert('Введите секретный ключ!');
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const encrypted = CryptoJS.AES.encrypt(e.target.result, key).toString();
+        downloadBlob(encrypted, 'full.enc');
+        setStatus('🔐 Полная версия зашифрована в файл full.enc и скачана!');
+    };
+    reader.readAsText(file);
+}
+
+// 3. Генерация файла-загрузчика index.html
+function buildIndexLoader() {
+    const scriptUrl = document.getElementById('scriptUrl').value.trim() || 'ВСТАВЬ_СЮДА_URL_ТВОЕГО_GOOGLE_APPS_SCRIPT';
+    const indexCode = `<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ОПЭА - РАЗРАБОТЧИК</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"><\/script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"><\/script>
+    <style>
+        body {
+            background-color: #020617; color: #f8fafc; font-family: 'Inter', sans-serif;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100dvh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center;
+        }
+        .card {
+            background: #0f172a; border: 2px solid #1e293b; border-radius: 16px;
+            padding: 30px 20px; max-width: 360px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 4px solid #1e293b; border-top: 4px solid #38bdf8;
+            border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        h3 { margin: 0 0 10px 0; font-size: 18px; color: #e0f2fe; }
+        p { font-size: 13px; color: #94a3b8; line-height: 1.4; margin: 0 0 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="card" id="loader-card">
+        <div class="spinner" id="spinner"></div>
+        <h3 id="status-title">Запуск ОПЭА...</h3>
+        <p id="status-desc">Проверка режима доступа</p>
+    </div>
+
+    <script>
+        const SCRIPT_URL = '${scriptUrl}';
+
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('keydown', e => {
+            if (e.key === 'F12' || (e.ctrlKey && ['s','u','S','U'].includes(e.key))) e.preventDefault();
+        });
+
+        async function initApp() {
+            const tg = window.Telegram.WebApp;
+            tg.expand();
+            const userId = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null;
+
+            if (!userId) {
+                document.getElementById('spinner').style.display = 'none';
+                document.getElementById('status-title').innerText = 'Откройте в Telegram';
+                document.getElementById('status-desc').innerText = 'Симулятор запускается только внутри официального Telegram-бота.';
+                return;
+            }
+
+            try {
+                const res = await fetch(\`\${SCRIPT_URL}?action=verify&uid=\${userId}\`);
+                const data = await res.json();
+
+                if (data.tier === 'FULL' && data.secretKey) {
+                    document.getElementById('status-title').innerText = 'Загрузка PRO-версии...';
+                    const encRes = await fetch('full.enc');
+                    const cipherText = await encRes.text();
+                    const decryptedHtml = CryptoJS.AES.decrypt(cipherText.trim(), data.secretKey).toString(CryptoJS.enc.Utf8);
+                    renderAppHtml(decryptedHtml);
+                } else {
+                    document.getElementById('status-title').innerText = 'Загрузка Демо-версии...';
+                    const freeRes = await fetch('free.html');
+                    const freeHtml = await freeRes.text();
+                    renderAppHtml(freeHtml);
+                }
+            } catch (err) {
+                console.error(err);
+                const freeRes = await fetch('free.html');
+                const freeHtml = await freeRes.text();
+                renderAppHtml(freeHtml);
+            }
+        }
+
+        function renderAppHtml(fullHtmlDocument) {
+            document.open();
+            document.write(fullHtmlDocument);
+            document.close();
+        }
+
+        window.onload = initApp;
+    <\/script>
+</body>
+</html>`;
+    downloadBlob(indexCode, 'index.html');
+    setStatus('🚀 Загрузчик index.html успешно скачан!');
+}
+</script>
+</body>
+</html>
