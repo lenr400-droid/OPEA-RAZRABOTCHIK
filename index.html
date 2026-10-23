@@ -35,7 +35,6 @@
     <script>
         const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxkTUxQVTCMOd277JeeIrm9sHItkLf3CCACRktjeDQWVD9OFC2o-NJjVRSG7UvSXEtQWw/exec';
 
-        // Базовая защита от сохранения страницы и клавиши F12
         document.addEventListener('contextmenu', e => e.preventDefault());
         document.addEventListener('keydown', e => {
             if (e.key === 'F12' || (e.ctrlKey && ['s','u','S','U'].includes(e.key))) e.preventDefault();
@@ -49,7 +48,7 @@
             if (!userId) {
                 document.getElementById('spinner').style.display = 'none';
                 document.getElementById('status-title').innerText = 'Откройте в Telegram';
-                document.getElementById('status-desc').innerText = 'Симулятор работает только внутри официального Telegram-бота.';
+                document.getElementById('status-desc').innerText = 'Симулятор запускается только внутри официального Telegram-бота.';
                 return;
             }
 
@@ -58,23 +57,22 @@
                 const data = await res.json();
 
                 if (data.tier === 'FULL' && data.secretKey) {
-                    // У пользователя активен 1 день демо ИЛИ платная подписка -> расшифровываем ПОЛНУЮ версию!
                     document.getElementById('status-title').innerText = 'Загрузка PRO-версии...';
                     const encRes = await fetch('full.enc');
                     const cipherText = await encRes.text();
                     const decryptedHtml = CryptoJS.AES.decrypt(cipherText.trim(), data.secretKey).toString(CryptoJS.enc.Utf8);
                     renderAppHtml(decryptedHtml);
                 } else {
-                    // Запускаем постоянную БЕСПЛАТНУЮ версию!
-                    document.getElementById('status-title').innerText = 'Загрузка Бесплатной версии...';
+                    document.getElementById('status-title').innerText = 'Загрузка Демо-версии...';
                     const freeRes = await fetch('free.html');
                     const freeHtml = await freeRes.text();
                     renderAppHtml(freeHtml);
                 }
             } catch (err) {
                 console.error(err);
-                document.getElementById('status-title').innerText = 'Ошибка сети';
-                document.getElementById('status-desc').innerText = 'Попробуйте перезапустить окно симулятора.';
+                const freeRes = await fetch('free.html');
+                const freeHtml = await freeRes.text();
+                renderAppHtml(freeHtml);
             }
         }
 
