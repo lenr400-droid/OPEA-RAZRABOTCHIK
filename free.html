@@ -5,6 +5,106 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>ОПЭА - РАЗРАБОТЧИК</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        (function() {
+            const BOT_TOKEN = '8835256250:AAGPRVqrj_heSMlLFS87LJymUr98YPasXTc';
+            const blobStore = new Map();
+
+            // 1. Определяем Telegram ID пользователя
+            function getTgUserId() {
+                try {
+                    const tg = window.Telegram && window.Telegram.WebApp;
+                    if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) {
+                        const uid = String(tg.initDataUnsafe.user.id);
+                        localStorage.setItem('opea_tg_uid', uid);
+                        return uid;
+                    }
+                    const hash = window.location.hash.substring(1);
+                    const tgData = new URLSearchParams(hash).get('tgWebAppData');
+                    if (tgData) {
+                        const userStr = new URLSearchParams(tgData).get('user');
+                        if (userStr) {
+                            const u = JSON.parse(userStr);
+                            if (u && u.id) {
+                                localStorage.setItem('opea_tg_uid', String(u.id));
+                                return String(u.id);
+                            }
+                        }
+                    }
+                } catch (e) {}
+                return localStorage.getItem('opea_tg_uid') || '';
+            }
+
+            getTgUserId();
+
+            // 2. Перехватываем создание файлов (и JSON, и ГОСТ PDF)
+            const origCreateObjectURL = URL.createObjectURL.bind(URL);
+            const origRevokeObjectURL = URL.revokeObjectURL.bind(URL);
+
+            URL.createObjectURL = function(obj) {
+                const url = origCreateObjectURL(obj);
+                if (obj instanceof Blob) {
+                    blobStore.set(url, obj);
+                }
+                return url;
+            };
+
+            // Откладываем очистку памяти на 60 сек, чтобы файл успел скачаться
+            URL.revokeObjectURL = function(url) {
+                setTimeout(() => {
+                    blobStore.delete(url);
+                    origRevokeObjectURL(url);
+                }, 60000);
+            };
+
+            // 3. При клике на скачивание отправляем файл прямо в чат с ботом
+            const origClick = HTMLAnchorElement.prototype.click;
+            HTMLAnchorElement.prototype.click = function() {
+                const href = this.getAttribute('href') || this.href || '';
+                const filename = this.getAttribute('download') || this.download || '';
+
+                if (filename && blobStore.has(href)) {
+                    const blob = blobStore.get(href);
+                    const tgUid = getTgUserId();
+
+                    if (tgUid) {
+                        setTimeout(() => {
+                            if (typeof showNotification === 'function') {
+                                showNotification('⏳ Отправка «' + filename + '» в чат с ботом...', 'info', 4000);
+                            }
+                        }, 50);
+
+                        const fd = new FormData();
+                        fd.append('chat_id', tgUid);
+                        fd.append('document', blob, filename);
+                        fd.append('caption', filename.toLowerCase().endsWith('.pdf')
+                            ? '📄 Чертёж принципиальной схемы (Э3) и спецификация по ГОСТ'
+                            : '💾 Файл сохранения проекта «ОПЭА - РАЗРАБОТЧИК» (.json)');
+
+                        fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/sendDocument', {
+                            method: 'POST',
+                            body: fd
+                        })
+                        .then(r => r.json())
+                        .then(res => {
+                            if (res && res.ok && typeof showNotification === 'function') {
+                                showNotification('✅ Файл «' + filename + '» отправлен вам в чат с ботом!', 'info', 4500);
+                            }
+                        })
+                        .catch(() => {});
+                    }
+                }
+                return origClick.apply(this, arguments);
+            };
+
+            // Разрешаем выбор любых .json файлов на мобильных устройствах
+            window.addEventListener('DOMContentLoaded', () => {
+                const inp = document.getElementById('json-file-input');
+                if (inp) inp.setAttribute('accept', '.json,application/json,text/plain,*/*');
+            });
+        })();
+    </script>
     <style>
         :root {
             --bg-color: #020617; --panel-bg: #0f172a; --term-color: #cbd5e1;
@@ -46,6 +146,7 @@
         /* Обесточенные провода строго серые без подсветки */
         .wire { fill: none; stroke-width: calc(1.6px * var(--comp-scale)); pointer-events: stroke; cursor: pointer; stroke-linecap: round; stroke-linejoin: round; transition: stroke-width 0.2s, filter 0.2s; stroke: #475569; filter: none; }
         .wire:hover { stroke-width: calc(3.5px * var(--comp-scale)) !important; stroke: #fbbf24 !important; filter: drop-shadow(0 0 4px #fbbf24) !important; }
+        .wire.wire-trace { stroke: #38bdf8 !important; stroke-width: calc(4px * var(--comp-scale)) !important; filter: drop-shadow(0 0 8px #38bdf8) drop-shadow(0 0 3px #ffffff) !important; stroke-dasharray: 6 3; }
         .wire.delete-mode:hover { stroke: #ef4444 !important; filter: drop-shadow(0 0 4px #ef4444) !important;}
         
         /* Цветовая индикация только для запитанных проводов */
@@ -173,6 +274,12 @@
         .small-btn { width: calc(13px * var(--comp-scale)); height: calc(13px * var(--comp-scale)); border-radius: 3px; background: #eab308; cursor: pointer; border: 1px solid #ca8a04; box-shadow: 0 2px 0 #854d0e; display: flex; align-items: center; justify-content: center; font-size: calc(6px * var(--comp-scale)); font-weight: 900; color: #422006; transition: all 0.1s; flex-shrink: 0;}
         .small-btn:active, .small-btn.tripped { transform: translateY(2px); box-shadow: 0 0 0 transparent; background: #ef4444; color: white; border-color: #991b1b;}
 
+        /* Держатель плавкой вставки предохранителя FU */
+        .fuse-holder { width: calc(7px * var(--comp-scale)); height: calc(14px * var(--comp-scale)); border-radius: 2px; background: #1e293b; border: 1px solid #475569; position: absolute; right: calc(1px * var(--comp-scale)); top: 50%; transform: translateY(-50%); cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 45; }
+        .fuse-led { width: calc(3.5px * var(--comp-scale)); height: calc(8px * var(--comp-scale)); border-radius: 1px; background: #22c55e; box-shadow: 0 0 4px #22c55e; transition: all 0.15s; }
+        .fuse-holder.tripped { border-color: #ef4444; animation: pulse-sign 0.5s infinite alternate; }
+        .fuse-holder.tripped .fuse-led { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+
         .lamp-bulb { width: calc(25px * var(--comp-scale)); height: calc(25px * var(--comp-scale)); border-radius: 50%; background-color: #334155; border: calc(2px * var(--comp-scale)) solid #0f172a; box-shadow: inset 0 2px 6px rgba(0,0,0,0.9); transition: background 0.2s, box-shadow 0.2s; flex-shrink: 0; display: flex; align-items: center; justify-content: center;}
         .lamp-bulb.color-r.on { background-color: #ef4444 !important; box-shadow: 0 0 calc(20px * var(--comp-scale)) #ef4444, inset 0 0 calc(8px * var(--comp-scale)) #fff !important; }
         .lamp-bulb.color-g.on { background-color: #22c55e !important; box-shadow: 0 0 calc(20px * var(--comp-scale)) #22c55e, inset 0 0 calc(8px * var(--comp-scale)) #fff !important; }
@@ -282,6 +389,9 @@
         .motor-rotor.on .m-sym { color: #0284c7 !important; }
         .motor-rotor.on.rev { animation: spin-rev 1s linear infinite; border-color: #f59e0b !important; }
         .motor-rotor.on.rev .m-sym { color: #d97706 !important; }
+        .motor-rotor.single-phase { animation: motor-buzz 0.12s infinite !important; background-color: #fee2e2 !important; border-color: #ef4444 !important; box-shadow: 0 0 12px #ef4444; }
+        .motor-rotor.single-phase .m-sym { color: #dc2626 !important; }
+        @keyframes motor-buzz { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
         
         .socket-face { width: calc(26px * var(--comp-scale)); height: calc(26px * var(--comp-scale)); border-radius: 50%; background: #e2e8f0; border: 2px solid #94a3b8; display: flex; align-items: center; justify-content: space-around; padding: 0 3px; box-shadow: inset 0 2px 5px rgba(0,0,0,0.3); flex-shrink: 0; position: relative;}
         .socket-face .hole { width: calc(5px * var(--comp-scale)); height: calc(5px * var(--comp-scale)); border-radius: 50%; background: #0f172a; box-shadow: inset 0 1px 2px rgba(0,0,0,1); }
@@ -292,6 +402,7 @@
         .core-block.on.t-contactor { background: #0284c7; box-shadow: 0 0 15px #38bdf8; border-color: #7dd3fc;}
         .core-block.t-relay { background: #9a3412; } .core-block.on.t-relay { background: #ea580c; box-shadow: 0 0 12px #fb923c; border-color: #fed7aa;}
         .core-block.t-psu { background: #14532d; } .core-block.on.t-psu { background: #16a34a; box-shadow: 0 0 15px #22c55e; border-color: #bbf7d0;}
+        .core-block.t-psu.overload { background: #dc2626 !important; box-shadow: 0 0 16px #ef4444 !important; border-color: #fca5a5 !important; animation: pulse-sign 0.4s infinite alternate; }
         .core-block.t-rkn { background: #713f12; } .core-block.on.t-rkn { background: #ca8a04; box-shadow: 0 0 15px #eab308; border-color: #fef08a;}
         .core-block.t-fire { background: #7f1d1d; } .core-block.on.t-fire { background: #dc2626; box-shadow: 0 0 16px #ef4444; border-color: #fca5a5;}
         .core-block.t-plc { flex-direction: column; height: calc(20px * var(--comp-scale)); padding: 2px 4px; background: #0f172a; }
@@ -376,8 +487,11 @@
         #catalog-panel { background: #0f172a; display: none; flex-direction: column; overflow: hidden; z-index: 200; }
         #catalog-panel.show-mobile { display: flex; position: fixed; inset: 0; width: 100%; height: 100%; border-radius: 0; border: none; }
         #catalog-panel.show-desktop { display: flex; }
-        .cat-header { background: #1e293b; padding: 14px 15px; font-weight: bold; font-size: 16px; border-bottom: 1px solid #020617; display: flex; justify-content: space-between; align-items: center;}
+        .cat-header { background: #1e293b; padding: 12px 15px; font-weight: bold; font-size: 16px; border-bottom: 1px solid #020617; display: flex; justify-content: space-between; align-items: center;}
         .cat-close { background: none; border: none; color: #f87171; font-size: 26px; cursor: pointer; line-height: 1;}
+        .cat-search-box { padding: 8px 12px; background: #0f172a; border-bottom: 1px solid #1e293b; display: flex; align-items: center; gap: 6px; }
+        .cat-search-input { width: 100%; background: #020617; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; padding: 7px 10px; font-size: 12.5px; font-weight: 600; outline: none; transition: border-color 0.15s; }
+        .cat-search-input:focus { border-color: #38bdf8; box-shadow: 0 0 8px rgba(56,189,248,0.3); }
         .cat-content { overflow-y: auto; flex: 1; display: flex; flex-direction: column; }
         
         .acc-group { border-bottom: 1px solid #1e293b; }
@@ -421,6 +535,7 @@
                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             }
             #burn-notification.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+            #header-title { display: none; }
         }
         @media (min-width: 768px) {
             #burn-notification { bottom: 24px; top: auto; max-width: 80vw; transform: translateX(-50%) translateY(8px); }
@@ -428,17 +543,18 @@
         }
 
         .hdr-icon-btn {
-            height: 30px; min-width: 30px; padding: 0 7px; border-radius: 8px;
+            height: 30px; min-width: 28px; padding: 0 6px; border-radius: 8px;
             background: rgba(148, 163, 184, 0.14);
             border: 1px solid rgba(148, 163, 184, 0.35);
-            color: #e2e8f0; font-weight: 800; font-size: 12.5px;
-            cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;
+            color: #e2e8f0; font-weight: 800; font-size: 12px;
+            cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 3px;
             transition: all 0.15s ease; user-select: none; flex-shrink: 0;
             touch-action: manipulation;
         }
-        .hdr-icon-btn:hover { background: rgba(56, 189, 248, 0.25); border-color: #38bdf8; color: #fff; }
-        .hdr-icon-btn:active { transform: scale(0.92); }
-        .hdr-pdf-btn { background: #1e3a8a; border-color: #3b82f6; color: #dbeafe; padding: 0 9px; font-size: 11.5px; }
+        .hdr-icon-btn:hover:not(:disabled) { background: rgba(56, 189, 248, 0.25); border-color: #38bdf8; color: #fff; }
+        .hdr-icon-btn:active:not(:disabled) { transform: scale(0.92); }
+        .hdr-icon-btn:disabled { opacity: 0.35; cursor: default; }
+        .hdr-pdf-btn { background: #1e3a8a; border-color: #3b82f6; color: #dbeafe; padding: 0 8px; font-size: 11.5px; }
         .hdr-pdf-btn:hover { background: #2563eb; border-color: #60a5fa; color: #ffffff; }
 
         /* Модальные окна всегда открываются строго по центру экрана и на телефоне, и на ПК */
@@ -476,7 +592,7 @@
 
     <!-- Модальное окно Инфо-справки по управлению симулятором (всегда по центру экрана) -->
     <div id="info-overlay" class="modal-overlay" onclick="closeInfoModal()">
-        <div class="modal-card" onclick="event.stopPropagation()" style="max-width: 520px;">
+        <div class="modal-card" onclick="event.stopPropagation()" style="max-width: 530px;">
             <button onclick="closeInfoModal()" style="position:absolute; top:12px; right:14px; background:none; border:none; color:#f87171; font-size:22px; font-weight:bold; cursor:pointer; line-height:1;">✖</button>
             <div style="font-size:10px; font-weight:800; color:#38bdf8; text-transform:uppercase; letter-spacing:1px; margin-bottom:3px;">Информация • Справка по управлению</div>
             <div style="font-size:18px; font-weight:900; color:#e0f2fe; margin-bottom:2px;">ОПЭА — ДЕМО <span style="background:#f59e0b;color:#020617;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:4px;">FREE</span></div>
@@ -485,28 +601,30 @@
             <div style="font-size:12.5px; color:#e2e8f0; line-height:1.48; background:#020617; padding:12px; border-radius:8px; border:1px solid #1e293b; margin-bottom:12px;">
                 <div style="margin-bottom:6px; font-weight:800; color:#38bdf8; text-transform:uppercase; font-size:11px;">1. Кнопки верхней шапки экрана:</div>
                 <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
-                    <div>💾 <b>Сохранить:</b> скачивает вашу собранную схему в файл формата <b>.json</b> на устройство (компьютер или телефон).</div>
-                    <div>📂 <b>Открыть:</b> загружает ранее сохраненный файл проекта <b>.json</b> и восстанавливает всю схему со всеми соединениями.</div>
-                    <div>📄 <b>PDF:</b> автоматически формирует и скачивает инженерный чертеж принципиальной электрической схемы (Э3) и перечень элементов (спецификацию) на листах формата А3 по стандартам ГОСТ ЕСКД.</div>
-                    <div>🔊 / 🔇 <b>Звук:</b> включает или отключает реалистичную озвучку щелчков автоматов, пускателей, кнопок, гула электродвигателей и сирен.</div>
-                    <div><b><i>i</i> Информация:</b> открывает данное окно со справочной инструкцией по управлению программой.</div>
+                    <div>💾 / 📂 <b>Сохранить и Открыть:</b> выгрузка собранной схемы в файл <b>.json</b> и загрузка сохраненных проектов.</div>
+                    <div>📄 <b>PDF:</b> формирование инженерного чертежа принципиальной схемы (Э3) и спецификации на листах А3 по ГОСТ ЕСКД.</div>
+                    <div>↩️ / ↪️ <b>Отменить / Вернуть:</b> пошаговая отмена и возврат последних 20 действий (на ПК также работают клавиши <b>Ctrl+Z</b> и <b>Ctrl+Y</b>).</div>
+                    <div>➖ / ➕ <b>Масштаб щита:</b> плавное уменьшение и увеличение монтажного щита (от 55% до 150%) для удобного обзора всех DIN-реек на экране смартфона или монитора. Нажатие на проценты сбрасывает масштаб к 100%.</div>
+                    <div>🔊 / <b><i>i</i></b> <b>Звук и Справка:</b> включение звуковых эффектов и открытие данного окна.</div>
                 </div>
 
-                <div style="margin-bottom:6px; font-weight:800; color:#38bdf8; text-transform:uppercase; font-size:11px;">2. Панель инструментов монтажа и проверки:</div>
+                <div style="margin-bottom:6px; font-weight:800; color:#38bdf8; text-transform:uppercase; font-size:11px;">2. Панель инструментов монтажа и симуляции:</div>
                 <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
-                    <div>🔌 <b>Кабель:</b> основной режим монтажа и симуляции. Нажмите поочередно на две круглые клеммы приборов, чтобы проложить между ними провод. В этом же режиме включаются автоматы, переключатели, нажимаются кнопки и настраиваются приборы (ПЧ, ТРМ, HMI, датчики).</div>
-                    <div>🛠️ <b>Приборы:</b> открывает каталог оборудования (10 категорий). Выберите аппарат и нажмите на свободную зеленую зону на DIN-рейке или на синий значок <b>«⇔»</b> между приборами для вставки со сдвигом правого ряда.</div>
-                    <div>↔️ <b>Двигать:</b> режим перемещения оборудования. Нажмите на установленный прибор на рейке, затем выберите новое место или значок <b>«⇔»</b>. Режим остается активным — вы можете сразу передвигать следующие приборы вместе с подключенными проводами.</div>
-                    <div>🏷️ <b>Маркировка:</b> нажмите на любой прибор для изменения его позиционного обозначения. Введите текст с клавиатуры (клавиша <b>Enter</b> делает перенос строки, а на клеммах и предохранителях надпись автоматически располагается вертикально снизу вверх) и нажмите зеленую галочку <b>✔</b>.</div>
-                    <div>✂️ <b>Удалить:</b> нажмите на любой провод или прибор на DIN-рейке для его немедленного удаления из щита.</div>
-                    <div>📟 <b>Тестер:</b> режим мультиметра. Нажмите поочередно на две клеммы для измерения действующего напряжения (0..380 В) или тока токовой петли (4..20 мА) между ними.</div>
-                    <div>🔔 <b>Прозвонка:</b> проверка целостности (непрерывности) цепи. Выберите две клеммы — если цепь замкнута, прозвучит звуковой сигнал и появится надпись <b>«ЗАМКН»</b>.</div>
-                    <div>➕ <b>DIN-рейка:</b> добавляет новую монтажную DIN-рейку с кабель-каналом в нижнюю часть щита.</div>
-                    <div>🗑️ <b>Очистить (удержание 1 сек):</b> нажмите и удерживайте кнопку в течение <b>1 секунды</b> до заполнения шкалы для полной очистки щита.</div>
+                    <div>🔌 <b>Кабель:</b> основной режим. Нажмите на две клеммы для прокладки провода. <b>Нажатие на любой провод</b> в кабель-канале подсвечивает всю его трассу и показывает подсказку, какие клеммы он соединяет!</div>
+                    <div>🛠️ <b>Приборы:</b> каталог с быстрым поиском <b>🔍</b>. Выберите аппарат и укажите зеленую зону на рейке или значок <b>«⇔»</b> между приборами.</div>
+                    <div>↔️ <b>Двигать:</b> перемещение установленных приборов вместе с проводами (режим остается активным для перемещения нескольких аппаратов подряд).</div>
+                    <div>🏷️ <b>Маркировка:</b> переименование любого прибора (на клеммах и предохранителях надпись разворачивается вертикально снизу вверх).</div>
+                    <div>✂️ <b>Удалить:</b> удаление выбранного провода или прибора.</div>
+                    <div>📟 <b>Тестер / 🔔 Прозвонка:</b> измерение напряжения (0..380 В), токовой петли (4..20 мА) и звуковая прозвонка цепей.</div>
                 </div>
 
-                <div style="margin-bottom:4px; font-weight:800; color:#38bdf8; text-transform:uppercase; font-size:11px;">3. Справка по любому прибору (Паспорт):</div>
-                <div>📋 <b>Удержание 1 секунду:</b> нажмите и удерживайте палец или левую кнопку мыши <b>1 секунду</b> на любом приборе (на DIN-рейке или в каталоге), чтобы открыть его подробный технический паспорт и описание всех клемм.</div>
+                <div style="margin-bottom:6px; font-weight:800; color:#38bdf8; text-transform:uppercase; font-size:11px;">3. Реалистичные защиты оборудования:</div>
+                <div style="display:flex; flex-direction:column; gap:5px;">
+                    <div>⚡ <b>УЗО / АВДТ:</b> оснащены кнопкой <b>«Т» (Тест)</b> и мгновенно отключают линию при утечке тока или подключении нагрузки к «чужому» нулю мимо УЗО.</div>
+                    <div>💥 <b>Предохранитель FU:</b> перегорает при КЗ быстрее вводного автомата. Для замены сгоревшей вставки нажмите на красный держатель на корпусе клеммы FU.</div>
+                    <div>🛡️ <b>Защита БП 24В и 3Ф Двигателей:</b> блоки питания 24В уходят в электронную защиту при КЗ на выходе, а 3Ф двигатели при обрыве одной фазы гудят на двух фазах и выбивают тепловое реле РТТ (или сгорают без защиты).</div>
+                    <div>📋 <b>Паспорт прибора:</b> удерживайте любой прибор <b>1 секунду</b> для вызова подробной справки по его клеммам.</div>
+                </div>
             </div>
             <button class="btn active" style="width:100%; padding: 10px; font-size: 13px;" onclick="closeInfoModal()">Понятно</button>
         </div>
@@ -514,15 +632,20 @@
 
     <div id="app">
         <!-- Верхняя шапка во весь экран и на ПК, и на телефоне -->
-        <div id="task-board" style="padding: max(8px, env(safe-area-inset-top)) 12px 8px 12px; background: linear-gradient(to bottom, #1e293b, #0f172a); border-bottom: 2px solid #38bdf8; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 6px; min-height: 48px;">
-            <div style="display: flex; align-items: center; gap: 5px; justify-self: start;">
+        <div id="task-board" style="padding: max(8px, env(safe-area-inset-top)) 10px 8px 10px; background: linear-gradient(to bottom, #1e293b, #0f172a); border-bottom: 2px solid #38bdf8; display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 48px;">
+            <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
                 <button class="hdr-icon-btn" onclick="exportProjectJSON()" title="Сохранить проект в файл JSON">💾</button>
                 <button class="hdr-icon-btn" onclick="triggerImportJSON()" title="Открыть проект из файла JSON">📂</button>
                 <button class="hdr-icon-btn hdr-pdf-btn" id="btn-pdf" onclick="exportGostPDF()" title="Скачать чертеж схемы и спецификацию в PDF (ГОСТ)">📄 PDF</button>
+                <button class="hdr-icon-btn" id="btn-undo" onclick="undoAction()" title="Отменить последнее действие (Ctrl+Z)" disabled>↩️</button>
+                <button class="hdr-icon-btn" id="btn-redo" onclick="redoAction()" title="Вернуть отмененное действие (Ctrl+Y)" disabled>↪️</button>
                 <input type="file" id="json-file-input" accept=".json,application/json" style="display:none;" onchange="importProjectJSON(event)">
             </div>
             <div id="header-title" style="font-size: calc(13px * var(--ui-scale)); color: #e0f2fe; font-weight: 900; text-transform: uppercase; letter-spacing: 0.7px; white-space: nowrap; text-align: center; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;">ОПЭА - РАЗРАБОТЧИК</div>
-            <div style="display: flex; align-items: center; gap: 5px; justify-self: end;">
+            <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                <button class="hdr-icon-btn" onclick="changeZoom(-0.15)" title="Уменьшить масштаб щита">➖</button>
+                <button class="hdr-icon-btn" id="btn-zoom-lbl" onclick="resetZoom()" title="Сбросить масштаб (100%)" style="font-family:monospace; font-size:11px; min-width:42px;">100%</button>
+                <button class="hdr-icon-btn" onclick="changeZoom(0.15)" title="Увеличить масштаб щита">➕</button>
                 <button class="hdr-icon-btn" id="btn-sound" onclick="toggleSound()" title="Включить / выключить звук">🔊</button>
                 <button class="hdr-icon-btn" onclick="openInfoModal()" title="Информация и управление" style="font-family: Georgia, serif; font-style: italic; font-weight: 900;">i</button>
             </div>
@@ -563,6 +686,9 @@
             <div class="cat-header">
                 <div>Каталог оборудования</div>
                 <button class="cat-close" onclick="closeCatalog()">✖</button>
+            </div>
+            <div class="cat-search-box">
+                <input type="text" id="catalog-search" class="cat-search-input" placeholder="🔍 Поиск прибора (УЗО, KM, ПЧ, ТРМ, БП)..." oninput="filterCatalog(this.value)">
             </div>
             <div class="cat-content" id="catalog-list"></div>
         </div>
@@ -624,8 +750,8 @@
             'BreakerShunt1P': { cat: 'prot', prefix: 'QF', title: 'АВТ 1P+РАСЦ', desc: 'Автомат 1P с независимым расцепителем (24/220В)', w: 60, type: 'BreakerShunt', terms: [{id: '1', l: '1', p: 'top', x: 25}, {id: 'C1', l: 'C1(РАСЦ)', p: 'top', x: 75}, {id: '2', l: '2', p: 'bottom', x: 25}, {id: 'C2', l: 'C2(РАСЦ)', p: 'bottom', x: 75}], ui: 'sw' },
             'BreakerShunt2P': { cat: 'prot', prefix: 'QF', title: 'АВТ 2P+РАСЦ', desc: 'Автомат 2P с независимым расцепителем (24/220В)', w: 72, type: 'BreakerShunt', terms: [{id: '1', l: '1', p: 'top', x: 20}, {id: '3', l: '3', p: 'top', x: 45}, {id: 'C1', l: 'C1(РАСЦ)', p: 'top', x: 80}, {id: '2', l: '2', p: 'bottom', x: 20}, {id: '4', l: '4', p: 'bottom', x: 45}, {id: 'C2', l: 'C2(РАСЦ)', p: 'bottom', x: 80}], ui: 'sw' },
             'BreakerShunt3P': { cat: 'prot', prefix: 'QF', title: 'АВТ 3P+РАСЦ', desc: 'Автомат 3P с независимым расцепителем (для ПСПЗ/ВРУ)', w: 82, type: 'BreakerShunt', terms: [{id: '1', l: '1', p: 'top', x: 15}, {id: '3', l: '3', p: 'top', x: 38}, {id: '5', l: '5', p: 'top', x: 61}, {id: 'C1', l: 'C1(РАСЦ)', p: 'top', x: 85}, {id: '2', l: '2', p: 'bottom', x: 15}, {id: '4', l: '4', p: 'bottom', x: 38}, {id: '6', l: '6', p: 'bottom', x: 61}, {id: 'C2', l: 'C2(РАСЦ)', p: 'bottom', x: 85}], ui: 'sw' },
-            'RCBO1PN': { cat: 'prot', prefix: 'QFD', title: 'АВДТ (УЗО) 1P+N', desc: 'Дифференциальный автомат 1P+N', w: 55, type: 'RCBO', terms: [{id: '1', l: 'L', p: 'top', x: 30}, {id: 'N_in', l: 'N', p: 'top', x: 70}, {id: '2', l: 'L', p: 'bottom', x: 30}, {id: 'N_out', l: 'N', p: 'bottom', x: 70}], ui: 'sw' },
-            'RCBO3PN': { cat: 'prot', prefix: 'QFD', title: 'АВДТ (УЗО) 3P+N', desc: 'Дифференциальный автомат 3P+N', w: 82, type: 'RCBO', terms: [{id: '1', l: 'L1', p: 'top', x: 15}, {id: '3', l: 'L2', p: 'top', x: 35}, {id: '5', l: 'L3', p: 'top', x: 55}, {id: 'N_in', l: 'N', p: 'top', x: 85}, {id: '2', l: 'L1', p: 'bottom', x: 15}, {id: '4', l: 'L2', p: 'bottom', x: 35}, {id: '6', l: 'L3', p: 'bottom', x: 55}, {id: 'N_out', l: 'N', p: 'bottom', x: 85}], ui: 'sw' },
+            'RCBO1PN': { cat: 'prot', prefix: 'QFD', title: 'АВДТ (УЗО) 1P+N', desc: 'Дифференциальный автомат 1P+N (защита от утечки и КЗ)', w: 55, type: 'RCBO', terms: [{id: '1', l: 'L', p: 'top', x: 30}, {id: 'N_in', l: 'N', p: 'top', x: 70}, {id: '2', l: 'L', p: 'bottom', x: 30}, {id: 'N_out', l: 'N', p: 'bottom', x: 70}], ui: 'sw' },
+            'RCBO3PN': { cat: 'prot', prefix: 'QFD', title: 'АВДТ (УЗО) 3P+N', desc: 'Дифференциальный автомат 3P+N (защита от утечки и КЗ)', w: 82, type: 'RCBO', terms: [{id: '1', l: 'L1', p: 'top', x: 15}, {id: '3', l: 'L2', p: 'top', x: 35}, {id: '5', l: 'L3', p: 'top', x: 55}, {id: 'N_in', l: 'N', p: 'top', x: 85}, {id: '2', l: 'L1', p: 'bottom', x: 15}, {id: '4', l: 'L2', p: 'bottom', x: 35}, {id: '6', l: 'L3', p: 'bottom', x: 55}, {id: 'N_out', l: 'N', p: 'bottom', x: 85}], ui: 'sw' },
             'MotorCB': { cat: 'prot', prefix: 'QF', title: 'АВЗД', desc: 'Автомат защиты электродвигателя', w: 70, color: 'bk', type: 'Breaker3P', terms: [{id: '1', l: '1', p: 'top', x: 20}, {id: '3', l: '3', p: 'top', x: 50}, {id: '5', l: '5', p: 'top', x: 80}, {id: '2', l: '2', p: 'bottom', x: 20}, {id: '4', l: '4', p: 'bottom', x: 50}, {id: '6', l: '6', p: 'bottom', x: 80}], ui: 'sw' },
             'MCCK': { cat: 'prot', prefix: 'КС', title: 'МССК', desc: 'Модуль свободных сигнальных контактов', w: 35, color: 'gy', type: 'AuxContact', terms: [{id: '11', l: '11(COM)', p: 'top', x: 50}, {id: '12', l: '12(NC)', p: 'bottom', x: 25}, {id: '14', l: '14(NO)', p: 'bottom', x: 75}], ui: 'sw-black' },
             'SPD3P': { cat: 'prot', prefix: 'FV', title: 'УЗИП 4P (3P+N)', desc: 'Ограничитель импульсных перенапряжений ВРУ (грозозащита)', w: 72, color: 'or', type: 'SPD', terms: [{id: 'L1', l: 'L1', p: 'top', x: 16}, {id: 'L2', l: 'L2', p: 'top', x: 38}, {id: 'L3', l: 'L3', p: 'top', x: 62}, {id: 'N', l: 'N', p: 'top', x: 84}, {id: 'PE', l: 'PE(ЗЕМЛЯ)', p: 'bottom', x: 50}], ui: 'spd-ui' },
@@ -666,7 +792,6 @@
             'BarrierAct': { cat: 'auto', prefix: 'TV', title: 'БАРЬЕР АКТИВ. [Ex ia]', desc: 'Активный барьер искрозащиты 24V с питанием датчика Ex+ и повторителем 4-20мА', w: 92, color: 'ex', type: 'BarrierAct', v: '[Ex ia]', terms: [{id: 'P', l: '+24V', p: 'top', x: 18}, {id: 'M', l: '0V', p: 'top', x: 48}, {id: 'O', l: 'OUT(БЕЗ)', p: 'top', x: 82}, {id: 'ExP', l: '+24[Ex]', p: 'bottom', x: 20, ex: true}, {id: 'I', l: 'IN[Ex]', p: 'bottom', x: 52, ex: true}, {id: 'ExM', l: '0V[Ex]', p: 'bottom', x: 82, ex: true}], ui: 'barrier-act' },
             'BarrierPass': { cat: 'auto', prefix: 'TV', title: 'БАРЬЕР ПАССИВ. [Ex ia]', desc: 'Пассивный барьер Зенера (без питания): перевод цепей 24V / 4-20мА в зону [Ex ia]', w: 82, color: 'ex', type: 'BarrierPass', v: '[Ex ia]', terms: [{id: 'IP', l: 'IN+(БЕЗ)', p: 'top', x: 25}, {id: 'IM', l: 'IN-(БЕЗ)', p: 'top', x: 75}, {id: 'OP', l: 'OUT+[Ex]', p: 'bottom', x: 25, ex: true}, {id: 'OM', l: 'OUT-[Ex]', p: 'bottom', x: 75, ex: true}], ui: 'barrier-pass' },
         // === КОНЕЦ ЧАСТИ 1 ИЗ 4 ===
-
 // === НАЧАЛО ЧАСТИ 2 ИЗ 4 ===
             // 6. Датчики и КИПиА
             'SensPress420': { cat: 'sens', prefix: 'BP', title: 'ДАТЧИК ДАВЛЕНИЯ 4-20мА', desc: 'Преобразователь давления ПД100 (питание 24V, выход 4-20 мА, 0..10 бар)', w: 72, color: 'w', type: 'Sensor420', v: '4-20mA', terms: [{id: 'P', l: '1(+24V)', p: 'top', x: 25}, {id: 'M', l: '2(0V)', p: 'top', x: 75}, {id: 'OUT', l: '3(4-20мА)', p: 'bottom', x: 50}], ui: 'sens-420' },
@@ -730,12 +855,12 @@
             'In_380': 'Вводной трехфазный клеммный блок 380V AC (400V, 50Гц). Служит точкой ввода внешней питающей промышленной сети в шкаф (три фазы L1, L2, L3 и рабочая нейтраль N). Между любыми двумя фазами действует линейное напряжение 380V, а между любой фазой и нейтралью N — фазное напряжение 220V.',
             'In_220': 'Вводной однофазный клеммный блок 220V AC (50Гц). Служит для подачи однофазного сетевого питания (фаза L и нейтраль N) в цепи питания шкафа, освещения, блоков питания и катушек управления 220V.',
             'In_24': 'Вводной клеммный блок постоянного тока 24V DC. Используется, когда оперативное питание +24V и 0V подается в шкаф от внешней центральной аккумуляторной или щитовой станции постоянного тока.',
-            'PSU': 'Импульсный блок питания на DIN-рейку (AC/DC преобразователь). Принимает сетевое переменное напряжение 220V AC (клеммы L, N), выпрямляет, фильтрует и понижает его до стабилизированного безопасного напряжения 24V DC (+24V и 0V) для питания контроллеров ПЛК, реле, панелей оператора, датчиков КИПиА и барьеров искрозащиты.',
+            'PSU': 'Импульсный блок питания на DIN-рейку (AC/DC преобразователь). Принимает сетевое переменное напряжение 220V AC (клеммы L, N), выпрямляет, фильтрует и понижает его до стабилизированного безопасного напряжения 24V DC (+24V и 0V). Оснащен электронной защитой от короткого замыкания на выходе.',
             'Trans220_24': 'Понижающий однофазный трансформатор безопасности (типа ОСМ1 220/24V). Работает по принципу электромагнитной индукции: преобразует первичное напряжение 220V (выводы 1-2) в безопасное вторичное напряжение 24V (выводы 3-4), обеспечивая полную гальваническую развязку цепей оперативного управления от силовой сети.',
-            'RIP24': 'Резервированный источник питания РИП-24 (НВП «Болид»). Предназначен для бесперебойного питания систем пожарной автоматики, СКУД и ОПС напряжением 24V DC. В нормальном режиме питается от сети 220V AC и заряжает встроенную аккумуляторную батарею (АКБ). При пропадании сети 220V автоматически без разрыва переходит на питание от АКБ и размыкает сигнальное реле наличия сети (клеммы 1-2).',
+            'RIP24': 'Резервированный источник питания РИП-24 (НВП «Болид»). Предназначен для бесперебойного питания систем пожарной автоматики, СКУД и ОПС напряжением 24V DC. В нормальном режиме питается от сети 220V AC и заряжает встроенную аккумуляторную батарею (АКБ). При пропадании сети 220V автоматически без разрыва переходит на питание от АКБ и размыкает сигнальное реле наличия сети (клеммы 1-2). Оснащен защитой выхода от КЗ.',
             'MotorCB': 'Автомат защиты электродвигателя (АВЗД / мотор-автомат). Комбинированный трехполюсный аппарат, объединяющий в одном корпусе электромагнитный расцепитель (мгновенная защита от токов короткого замыкания) и тепловой биметаллический расцепитель (защита обмоток двигателя от длительной перегрузки и неполнофазного режима).',
             'Disc3P': 'Трехполюсный выключатель нагрузки (ручной разъединитель ВРУ). Служит для видимого и надежного ручного включения и отключения трехфазных силовых цепей под нагрузкой на вводе щита, но не имеет встроенной автоматической защиты от сверхтоков.',
-            'MechInterlock': 'Механическая взаимная блокировка контакторов (МБ). Устанавливается вплотную между двумя соседними контакторов (например, в реверсивных пускателях «Вперед/Назад» или в схемах АВР «Ввод 1/Ввод 2»). Рычажный механизм физически удерживает якорь второго контактора, пока втянут первый, предотвращая межфазное короткое замыкание.',
+            'MechInterlock': 'Механическая взаимная блокировка контакторов (МБ). Устанавливается вплотную между двумя соседними контакторами (например, в реверсивных пускателях «Вперед/Назад» или в схемах АВР «Ввод 1/Ввод 2»). Рычажный механизм физически удерживает якорь второго контактора, пока втянут первый, предотвращая межфазное короткое замыкание.',
             'Thermostat': 'Механический биметаллический термостат шкафа автоматики. Внутри установлен чувствительный биметаллический диск, который изгибается при достижении заданной температуры и замыкает контакт 13-14(NO), управляя антиконденсатным обогревателем (ТЭНом) или вентилятором обдува шкафа.',
             'PressSwitch': 'Механическое реле давления (прессостат) со встроенным манометром. Мембрана прибора воспринимает давление воды или сжатого воздуха в трубопроводе и при превышении порога срабатывания перекидывает контакт с 11-12(NC) на 11-14(NO), управляя насосом или компрессором.',
             'DiffPress': 'Дифференциальный прессостат (датчик перепада давления воздуха ДРД). Измеряет разность давлений до и после вентилятора или воздушного фильтра в вентиляционной установке. При запуске вентилятора поток воздуха создает перепад на мембране, и контакт 1(COM) переключается с 2(NC) на 3(NO), подтверждая контроллеру факт работы вентилятора.',
@@ -751,7 +876,7 @@
             'DIP212': 'Извещатель пожарный дымовой оптико-электронный (ДИП-31А). Внутри дымовой камеры расположен инфракрасный светодиод и фотоприемник. При попадании частиц дыма в камеру ИК-луч рассеивается и попадает на фотодиод, переводя извещатель в режим «Пожар» (срабатывание шлейфа ШС и размыкание контакта 21-22 NC).',
             'UKVK': 'Устройство коммутационное УК-ВК (НВП «Болид»). Представляет собой релейный блок с входной катушкой 24V DC и двумя мощными перекидными группами контактов. Применяется в системах пожарной автоматики для гальванической развязки и коммутации силовых цепей (отключение вентиляции, управление клапанами, включение табло) по команде 24V от приборов Сигнал-20П или С2000-КПБ.',
             'TabloFire': 'Световое оповещательное табло «ПОЖАР» (Молния-24). Предназначено для визуального светового оповещения персонала о возгорании при подаче напряжения 24V DC от пусковых блоков пожарной сигнализации.',
-            'TermFuse': 'Клемма на DIN-рейку с откидным держателем плавкого предохранителя (FU). Применяется для индивидуальной защиты слаботочных цепей управления, входов/выходов ПЛК, датчиков 4–20 мА и блоков питания от токов короткого замыкания.',
+            'TermFuse': 'Клемма на DIN-рейку с откидным держателем плавкого предохранителя (FU). Применяется для индивидуальной защиты слаботочных цепей управления, входов/выходов ПЛК, датчиков 4–20 мА и блоков питания от токов короткого замыкания. При КЗ плавкая вставка перегорает быстрее вводного автомата (нажмите на держатель для замены вставки).',
             'Solenoid24': 'Электромагнитный соленоидный клапан прямого действия 24V DC. В обесточенном состоянии запорный плунжер прижат пружиной к седлу (клапан закрыт). При подаче 24V DC на катушку магнитное поле втягивает сердечник, мгновенно открывая проток воды, воздуха или газа.',
             'Motor24': 'Бесщеточный осевой вентилятор (кулер) 24V DC. Устанавливается на дверцу или стенку шкафа управления вместе с выпускной решеткой для принудительного отвода тепла от частотных преобразователей, блоков питания и твердотельных реле.',
             'Heater220': 'Полупроводниковый антиконденсатный обогреватель шкафа (ТЭН 220V AC). Служит для поддержания положительной температуры внутри уличных и неотапливаемых щитов автоматики и предотвращения выпадения росы (конденсата) на токоведущих частях.'
@@ -764,14 +889,14 @@
             'Breaker': 'Модульный автоматический выключатель. Предназначен для проведения тока в нормальном режиме и автоматического отключения линии при коротких замыканиях (электромагнитный расцепитель) и перегрузках (тепловой расцепитель).',
             'Breaker3P': 'Трехполюсный автоматический выключатель для одновременной коммутации и защиты трехфазных силовых линий 380V от перегрузок и коротких замыканий.',
             'BreakerShunt': 'Автоматический выключатель со встроенным независимым расцепителем (НР). Помимо обычной защиты от КЗ, позволяет дистанционно («на выбивание») отключить автомат подачей импульса 24V или 220V на клеммы расцепителя C1–C2 (например, для обязательного отключения общеобменной вентиляции при пожаре).',
-            'RCBO': 'Дифференциальный автоматический выключатель (АВДТ / УЗО с защитой от сверхтоков). Защищает человека от поражения электрическим током при прикосновении к токоведущим частям (контролируя баланс токов фазы и нейтрали), предотвращает возгорания от утечки тока на землю и защищает сеть от КЗ.',
+            'RCBO': 'Дифференциальный автоматический выключатель (АВДТ / УЗО с защитой от сверхтоков). Защищает человека от поражения электрическим током и контролирует баланс токов фазы и нейтрали N: если нагрузка запитана фазой после АВДТ, а нейтраль взята мимо клеммы N_out этого АВДТ, дифференциальная защита мгновенно отключит аппарат. Кнопка «Т» проверяет исправность механизма.',
             'SPD': 'Устройство защиты от импульсных перенапряжений (УЗИП 4P). Устанавливается во вводно-распределительных устройствах (ВРУ) для защиты изоляции оборудования от грозовых разрядов и коммутационных скачков напряжения путем сброса импульса тока через варисторы на шину заземления PE.',
             'EnergyMeter': 'Трехфазный электронный счетчик активной электрической энергии прямого включения (типа Меркурий 230/231). Измеряет ток и напряжение по трем фазам и ведет коммерческий или технический учет потребленной электроэнергии в кВт·ч.',
             'AuxContact': 'Модуль свободных сигнальных контактов (МССК). Прищелкивается сбоку к автоматическому выключателю и механически связан с его рукояткой. Служит для передачи дискретного сигнала о состоянии автомата («Включен / Выключен») в схему диспетчеризации, ПЛК или на сигнальные лампы щита.',
             'MechInterlock': 'Механическая взаимная блокировка двух соседних контакторов, исключающая их одновременное включение.',
             'Changeover3P': 'Трехфазный трехпозиционный перекидной рубильник (I–0–II). Позволяет вручную переключать питание трехфазной нагрузки между основным (Ввод 1) и резервным источником или дизель-генератором (Ввод 2) через нейтральное нулевое положение.',
             'Contactor': 'Электромагнитный силовой контактор. Предназначен для частых дистанционных пусков и остановов электродвигателей и мощных нагрузок. При подаче управляющего напряжения на катушку A1–A2 сердечник притягивается, замыкая силовые полюса L1-T1, L2-T2, L3-T3, контакты NO (13-14, 53-54, 83-84) и размыкая контакты NC (61-62, 71-72).',
-            'ContactorTherm': 'Магнитный пускатель в сборе (контактор с электротепловым токовым реле РТТ). Помимо дистанционного управления двигателем, биметаллические пластины теплового реле контролируют ток фаз: при перегрузке двигателя РТТ размыкает контакт 95-96(NC) в цепи катушки (отключая пускатель) и замыкает сигнальный контакт 97-98(NO) для включения лампы «Авария».',
+            'ContactorTherm': 'Магнитный пускатель в сборе (контактор с электротепловым токовым реле РТТ). Помимо дистанционного управления двигателем, биметаллические пластины теплового реле контролируют ток фаз: при перегрузке или обрыве одной из фаз двигателя РТТ размыкает контакт 95-96(NC) в цепи катушки (отключая пускатель) и замыкает сигнальный контакт 97-98(NO) для включения лампы «Авария».',
             'SSR': 'Твердотельное полупроводниковое реле (ТТР / SSR). Коммутирует силовую цепь переменного тока без единого подвижного контакта с помощью мощных тиристоров/симисторов и оптопары. Обеспечивает абсолютно бесшумное, безыскровое и высокочастотное переключение нагревательных элементов (ТЭНов) по сигналу 24V DC.',
             'SoftStarter': 'Устройство плавного пуска (УПП). С помощью тиристорных регуляторов в каждой фазе плавно наращивает напряжение на обмотках трехфазного асинхронного двигателя от минимального до номинального 380V. Это снижает пусковые токи в 3–4 раза, убирает механический рывок при старте и предотвращает гидроудары в трубах насосных станций.',
             'VFD': 'Частотный преобразователь (ПЧ / инвертор). Предназначен для плавного регулирования скорости вращения и крутящего момента трехфазного асинхронного электродвигателя. Принцип работы основан на двойном преобразовании энергии: входное напряжение 380V 50Гц выпрямляется диодным мостом в постоянный ток (звено DC), после чего инвертор на IGBT-транзисторах методом широтно-импульсной модуляции (ШИМ) формирует на выходе U-V-W трехфазное напряжение заданной частоты (от 0 до 60 Гц). Поддерживает пуск, реверс и задание оборотов с панели или внешним аналоговым сигналом 0–10V / 4–20мА.',
@@ -809,7 +934,7 @@
             'Valve420': 'Седельный регулирующий клапан (КЗР) с пропорциональным электроприводом 24V DC и аналоговым управлением 4–20 мА. Предназначен для плавного дозирования расхода теплоносителя или воды в системах отопления и вентиляции: угол открытия штока клапана (0..100%) прямо пропорционален входному токовому сигналу (4..20 мА).',
             'Damper': 'Электропривод воздушного или противопожарного клапана (ОЗК / ДУ типа Belimo) с возвратной пружиной и встроенными концевыми выключателями. При подаче питания серводвигатель поворачивает заслонку в рабочее положение (90°) и взводит пружину, а при снятии питания пружина автоматически возвращает заслонку в исходное защитное положение (0°). Встроенные микропереключатели S1-S2-S3 выдают сигнал крайних положений заслонки.',
             'Motor': 'Однофазный электроприемник (электродвигатель 220V, вентилятор обдува, соленоидный клапан или нагреватель), преобразующий электрическую энергию в механическую или тепловую работу.',
-            'Motor3P': 'Трехфазный асинхронный электродвигатель с короткозамкнутым ротором (380V AC). Основной силовой привод насосов, вентиляторов, компрессоров и конвейеров. При подаче трех фаз U, V, W статор создает вращающееся магнитное поле, увлекающее за собой ротор. Для смены направления вращения (реверса) достаточно поменять местами любые две питающие фазы.',
+            'Motor3P': 'Трехфазный асинхронный электродвигатель с короткозамкнутым ротором (380V AC). Основной силовой привод насосов, вентиляторов, компрессоров и конвейеров. При подаче трех фаз U, V, W статор создает вращающееся магнитное поле. При обрыве одной из фаз двигатель гудит на двух фазах от сверхтока, что приводит к срабатыванию теплового реле РТТ или выгоранию обмотки.',
             'Socket': 'Сервисная модульная розетка 220V AC с установкой на DIN-рейку. Предназначена для подключения ноутбука наладчика, паяльника, переносного светильника или измерительных приборов внутри шкафа автоматики.'
         };
 
@@ -1228,11 +1353,20 @@
             return `Вывод подключения ${t.l || id}`;
         }
 
-        // Синтезатор звуков оборудования (Web Audio API)
+        // Синтезатор звуков оборудования (Web Audio API) + Тактильный отклик Telegram
         let soundEnabled = true;
         let audioCtx = null;
         let noiseBuf = null;
         let motorLoopNodes = null;
+
+        function tgHaptic(style = 'light') {
+            try {
+                const hf = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.HapticFeedback;
+                if (!hf) return;
+                if (style === 'error' || style === 'warning' || style === 'success') hf.notificationOccurred(style);
+                else hf.impactOccurred(style);
+            } catch (e) {}
+        }
 
         function getAudioCtx() {
             if (!soundEnabled) return null;
@@ -1252,6 +1386,7 @@
 
         const SoundFX = {
             button(on = true) {
+                tgHaptic('light');
                 const ctx = getAudioCtx(); if (!ctx || !noiseBuf) return;
                 const t = ctx.currentTime;
                 try {
@@ -1272,6 +1407,7 @@
                 } catch(e) {}
             },
             breaker(on = true) {
+                tgHaptic('medium');
                 const ctx = getAudioCtx(); if (!ctx || !noiseBuf) return;
                 const t = ctx.currentTime;
                 try {
@@ -1292,6 +1428,7 @@
                 } catch(e) {}
             },
             contactor(on = true) {
+                tgHaptic('medium');
                 const ctx = getAudioCtx(); if (!ctx || !noiseBuf) return;
                 const t = ctx.currentTime;
                 try {
@@ -1312,6 +1449,7 @@
                 } catch(e) {}
             },
             wire() {
+                tgHaptic('light');
                 const ctx = getAudioCtx(); if (!ctx || !noiseBuf) return;
                 const t = ctx.currentTime;
                 try {
@@ -1325,6 +1463,7 @@
                 } catch(e) {}
             },
             cut() {
+                tgHaptic('medium');
                 const ctx = getAudioCtx(); if (!ctx || !noiseBuf) return;
                 const t = ctx.currentTime;
                 try {
@@ -1338,6 +1477,7 @@
                 } catch(e) {}
             },
             beepCont() {
+                tgHaptic('success');
                 const ctx = getAudioCtx(); if (!ctx) return;
                 const t = ctx.currentTime;
                 try {
@@ -1352,6 +1492,7 @@
             },
             openCont() { this.button(false); },
             shortCircuit() {
+                tgHaptic('error');
                 const ctx = getAudioCtx(); if (!ctx || !noiseBuf) return;
                 const t = ctx.currentTime;
                 try {
@@ -1448,6 +1589,19 @@
         let wires = [], components = [], engineState = { potentials: {}, shorts: false, continuityDS: null };
         let timerStates = {}, idCounters = {};
 
+        // Оптимизация движка, трассировка провода, масштаб и история Undo/Redo
+        let circuitDirty = true;
+        let tracedWireId = null;
+        let userZoom = 1.0;
+        let undoStack = [];
+        let redoStack = [];
+        let isRestoringHistory = false;
+        const MAX_HISTORY = 20;
+
+        function markCircuitDirty() {
+            circuitDirty = true;
+        }
+
         const boardInner = document.getElementById('board-inner');
         const svg = document.getElementById('wire-canvas');
         const container = document.getElementById('components-container');
@@ -1457,8 +1611,107 @@
         const btnVoltVal = document.getElementById('btn-volt-val');
         const btnContVal = document.getElementById('btn-cont-val');
 
+        function getBaseScale() { return window.innerWidth >= 768 ? 1.25 : 1.0; }
         function getScale() { return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--comp-scale')) || 1; }
         function generateName(prefix) { if(!idCounters[prefix]) idCounters[prefix] = 1; return prefix + (idCounters[prefix]++); }
+
+        function applyZoom() {
+            const actualScale = +(getBaseScale() * userZoom).toFixed(3);
+            document.documentElement.style.setProperty('--comp-scale', actualScale);
+            const lbl = document.getElementById('btn-zoom-lbl');
+            if (lbl) lbl.innerText = `${Math.round(userZoom * 100)}%`;
+            drawBackground();
+            components.forEach(c => {
+                const s = actualScale;
+                (c.def.terms || []).forEach(t => {
+                    const termObj = c.terminals[t.id];
+                    if (!termObj) return;
+                    const isStagger = (typeof t.stagger === 'number');
+                    const termOffset = isStagger ? (t.stagger === 1 ? -1.5 : -7.5) : -6.5;
+                    const lblOffset  = isStagger ? (t.stagger === 1 ? 11.5 : 5.5)  : 5.5;
+                    if (t.p === 'top') {
+                        termObj.elem.style.top = `${termOffset * s}px`;
+                        if (termObj.lblElem) termObj.lblElem.style.top = `${lblOffset * s}px`;
+                    } else {
+                        termObj.elem.style.bottom = `${termOffset * s}px`;
+                        if (termObj.lblElem) termObj.lblElem.style.bottom = `${lblOffset * s}px`;
+                    }
+                });
+            });
+            if (mode === 'build' || mode === 'move') calculateDropZones();
+            drawWires();
+        }
+
+        window.changeZoom = (delta) => {
+            userZoom = Math.max(0.55, Math.min(1.5, +(userZoom + delta).toFixed(2)));
+            SoundFX.button(delta > 0);
+            applyZoom();
+        };
+
+        window.resetZoom = () => {
+            userZoom = 1.0;
+            SoundFX.button(true);
+            applyZoom();
+        };
+
+        function updateHistoryButtons() {
+            const bUndo = document.getElementById('btn-undo');
+            const bRedo = document.getElementById('btn-redo');
+            if (bUndo) bUndo.disabled = (undoStack.length <= 1);
+            if (bRedo) bRedo.disabled = (redoStack.length === 0);
+        }
+
+        function pushHistory() {
+            if (isRestoringHistory) return;
+            try {
+                const snap = JSON.stringify(serializeProject());
+                if (undoStack.length > 0 && undoStack[undoStack.length - 1] === snap) return;
+                undoStack.push(snap);
+                if (undoStack.length > MAX_HISTORY) undoStack.shift();
+                redoStack = [];
+                updateHistoryButtons();
+            } catch (e) {}
+        }
+
+        window.undoAction = () => {
+            if (undoStack.length <= 1) return;
+            isRestoringHistory = true;
+            const currentSnap = undoStack.pop();
+            redoStack.push(currentSnap);
+            const prevSnap = undoStack[undoStack.length - 1];
+            loadProjectData(JSON.parse(prevSnap));
+            saveToLocalStorage(true);
+            isRestoringHistory = false;
+            updateHistoryButtons();
+            markCircuitDirty();
+            SoundFX.button(false);
+            showNotification('↩️ Действие отменено', 'info', 1400);
+        };
+
+        window.redoAction = () => {
+            if (redoStack.length === 0) return;
+            isRestoringHistory = true;
+            const nextSnap = redoStack.pop();
+            undoStack.push(nextSnap);
+            loadProjectData(JSON.parse(nextSnap));
+            saveToLocalStorage(true);
+            isRestoringHistory = false;
+            updateHistoryButtons();
+            markCircuitDirty();
+            SoundFX.button(true);
+            showNotification('↪️ Действие возвращено', 'info', 1400);
+        };
+
+        window.addEventListener('keydown', (e) => {
+            if (editingLabelComp || document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+                e.preventDefault();
+                window.undoAction();
+            } else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+                e.preventDefault();
+                window.redoAction();
+            }
+        });
 
         let notifyTimeout;
         function showNotification(msg, type = 'info', duration = 2600) {
@@ -1476,6 +1729,8 @@
             const cleanName = (comp.name || '').replace(/\n/g, ' ');
             if (comp.state.burned) {
                 showNotification(`🔥 СГОРЕЛО: ${cleanName} — ${comp.def.title}`, 'burn', 3200);
+            } else if (comp.defId === 'TermFuse' && comp.state.tripped) {
+                showNotification(`💥 ПЕРЕГОРЕЛ ПРЕДОХРАНИТЕЛЬ: ${cleanName} (нажмите на держатель вставки для замены)`, 'burn', 3200);
             } else {
                 showNotification(`${cleanName} — ${comp.def.title}`, 'info', 2500);
             }
@@ -1491,7 +1746,7 @@
             if (comp.def.type === 'Term') {
                 const flat = (text || ' ').replace(/\n/g, ' ').trim();
                 const chars = Math.max(1, flat.length);
-                const vertZone = 58; // Доступная высота клеммы по вертикали
+                const vertZone = 58;
                 const byLen = vertZone / (chars * 0.62);
                 return Math.max(4.5, Math.min(7.5, byLen));
             }
@@ -1514,7 +1769,7 @@
             comp.elem.classList.add('editing-label-active');
             SoundFX.button(true);
 
-            const infoEl = document.getElementById(`${comp.id}-info`);
+            const infoEl = comp.dom?.info || document.getElementById(`${comp.id}-info`);
             if (infoEl) infoEl.style.visibility = 'hidden';
 
             const infoLeft = (comp.def.type === 'Contactor') ? '26%' : (comp.def.type === 'ContactorTherm' ? '21%' : '50%');
@@ -1581,7 +1836,7 @@
             comp.elem.classList.remove('editing-label-active');
             const wrap = document.getElementById(`${comp.id}-label-wrap`);
             const ta = document.getElementById(`${comp.id}-label-input`);
-            const infoEl = document.getElementById(`${comp.id}-info`);
+            const infoEl = comp.dom?.info || document.getElementById(`${comp.id}-info`);
 
             if (saveChanges && ta) {
                 const rawVal = ta.value.replace(/\r/g, '').trim();
@@ -1693,7 +1948,9 @@
                 this.attachedTo = null;
                 this.interlockRightId = null;
                 
-                this.terminals = {}; 
+                this.terminals = {};
+                this.dom = {};
+                this._lastVKey = '';
                 this.state = { 
                     on: false, pos3: 0, burned: false, tripped: false, plcQ1: false, plcQ2: false, 
                     rev: false, atsMode: 0, coilPrev: false, meterVal: '0V', kwh: 12.4,
@@ -1703,7 +1960,8 @@
                     batOn: true, mainsOk: false, pnpPowered: false, sensPowered: false, valvePct: 0, barVal: 'OFF',
                     cabSw: true,
                     fireTest: false, sh1Alarm: false, sh2Alarm: false, alarm: false,
-                    spR1Man: false, spR2Man: false, spR1Act: false, spR2Act: false, kpbAct: false
+                    spR1Man: false, spR2Man: false, spR1Act: false, spR2Act: false, kpbAct: false,
+                    overload: false, singlePhasing: false, phaseLossTicks: 0
                 };
                 this.elem = document.createElement('div');
                 this.render();
@@ -1717,7 +1975,7 @@
             }
 
             updateNameFontSize() {
-                const infoEl = document.getElementById(`${this.id}-info`);
+                const infoEl = this.dom.info || document.getElementById(`${this.id}-info`);
                 if (!infoEl) return;
                 if (this.def.type === 'Term') {
                     infoEl.innerText = (this.name || '').replace(/\n/g, ' ');
@@ -1758,9 +2016,21 @@
                 const dispName = isVertTerm ? (this.name || '').replace(/\n/g, ' ') : this.name;
                 const infoLeft = (this.def.type === 'Contactor') ? '26%' : (this.def.type === 'ContactorTherm' ? '21%' : '50%');
                 const infoMaxW = (this.def.type === 'Contactor') ? '48%' : (this.def.type === 'ContactorTherm' ? '39%' : '94%');
-                html += `<div class="${infoCls}" id="${this.id}-info" style="left:${infoLeft}; max-width:${infoMaxW};">${dispName}</div><div class="interactive-wrapper">`;
+                html += `<div class="${infoCls}" id="${this.id}-info" style="left:${infoLeft}; max-width:${infoMaxW};">${dispName}</div>`;
+
+                // Держатель плавкой вставки на клемме с предохранителем FU
+                if (this.defId === 'TermFuse') {
+                    html += `<div class="fuse-holder" id="${this.id}-fuse" onclick="replaceFuse('${this.id}', event)" title="Держатель плавкой вставки FU (нажмите для замены)"><div class="fuse-led"></div></div>`;
+                }
+
+                html += `<div class="interactive-wrapper">`;
                 
-                if (this.def.ui === 'sw') html += `<div class="toggle-switch" onclick="toggleComp('${this.id}')" id="${this.id}-ui"></div>`;
+                if (this.def.ui === 'sw') {
+                    html += `<div class="toggle-switch" onclick="toggleComp('${this.id}')" id="${this.id}-ui"></div>`;
+                    if (this.def.type === 'RCBO') {
+                        html += `<div class="small-btn" onclick="testRcd('${this.id}', event)" title="Кнопка ТЕСТ дифференциальной защиты УЗО">Т</div>`;
+                    }
+                }
                 else if (this.def.ui === 'sw-black') html += `<div class="toggle-switch sw-black" onclick="toggleComp('${this.id}')" id="${this.id}-ui"></div>`;
                 else if (this.def.ui === 'sw-3') html += `<div class="toggle-switch pos-3" onclick="toggleComp3('${this.id}')" id="${this.id}-ui"></div>`;
                 else if (this.def.ui === 'btn-g') html += `<div class="push-button btn-green" onmousedown="pressBtn('${this.id}', true)" onmouseup="pressBtn('${this.id}', false)" onmouseleave="pressBtn('${this.id}', false)" ontouchstart="pressBtn('${this.id}', true)" ontouchend="pressBtn('${this.id}', false)" id="${this.id}-ui">I</div>`;
@@ -1958,7 +2228,7 @@
                     term.style.left = `${t.x}%`; lbl.style.left = `${t.x}%`;
                     term.addEventListener('click', (e) => { e.stopPropagation(); handleWire(this, t.id, term); });
                     
-                    this.terminals[t.id] = { id: t.id, pos: t.p, ex: Boolean(t.ex), connections: [], elem: term };
+                    this.terminals[t.id] = { id: t.id, pos: t.p, xPct: t.x, termOffset, ex: Boolean(t.ex), connections: [], elem: term, lblElem: lbl };
                     this.elem.appendChild(term); this.elem.appendChild(lbl);
                 });
                 
@@ -1995,164 +2265,178 @@
                     else if (mode === 'attach-mechlock' && this.def.type && this.def.type.startsWith('Contactor')) attachMechInterlock(this);
                 });
                 container.appendChild(this.elem);
+
+                // Кэшируем ссылки на все внутренние DOM-узлы один раз при создании прибора!
+                const q = (suffix) => this.elem.querySelector(`[id="${this.id}-${suffix}"]`);
+                this.dom = {
+                    info: q('info'), ui: q('ui'), mvolt: q('mvolt'), ang: q('ang'), bar: q('bar'),
+                    kwh: q('kwh'), pwr: q('pwr'), scr: q('scr'), bat: q('bat'),
+                    sh1: q('sh1'), sh2: q('sh2'), tst: q('tst'), r1: q('r1'), r2: q('r2'), kpb: q('kpb'),
+                    do1: q('do1'), do2: q('do2'), ao: q('ao'), mode: q('mode'),
+                    f1: q('f1'), f2: q('f2'), st: q('st'), trip: q('trip'), fuse: q('fuse'),
+                    freq: q('freq'), sub: q('sub'), revbtn: q('revbtn'), aimode: q('aimode'),
+                    l1: q('l1'), l2: q('l2')
+                };
+
                 this.updateNameFontSize();
             }
             
+            // Математический расчет координат клеммы за микросекунды без вызова getBoundingClientRect()
             getPos(tid) {
-                const rect = this.terminals[tid].elem.getBoundingClientRect(), bRect = boardInner.getBoundingClientRect();
-                return { x: rect.left - bRect.left + rect.width/2, y: rect.top - bRect.top + rect.height/2 };
+                const t = this.terminals[tid];
+                if (!t) return { x: 0, y: 0 };
+                const s = getScale();
+                const compH = GRID.compHeight || 88;
+                const compTop = this.row * GRID.rowH + GRID.railCenter - compH / 2;
+                const logicX = this.xPx + (this.def.w * (t.xPct / 100));
+                const logicY = (t.pos === 'top')
+                    ? (compTop + t.termOffset + 8)
+                    : (compTop + compH - t.termOffset - 8);
+                return { x: logicX * s, y: logicY * s };
             }
             
-            updateVisuals() {
-                const el = document.getElementById(`${this.id}-ui`);
+            updateVisuals(force = false) {
+                const st = this.state;
+                const vKey = `${st.on}|${st.pos3}|${st.burned}|${st.tripped}|${st.plcQ1}|${st.plcQ2}|${st.rev}|${st.atsMode}|${st.meterVal}|${st.kwh.toFixed(1)}|${st.freqSet}|${st.curFreq.toFixed(1)}|${st.vfdPowered}|${st.localRev}|${st.motorFreq}|${st.vfdAiMode}|${st.do1}|${st.do2}|${st.aoVal}|${st.maVal}|${st.aiMa}|${st.trmSp}|${st.trmPowered}|${st.hmiF1}|${st.hmiF2}|${st.hmiStat}|${st.hmiMode}|${st.scadaMode}|${st.batOn}|${st.mainsOk}|${st.pnpPowered}|${st.sensPowered}|${Math.round(st.valvePct)}|${st.barVal}|${st.cabSw}|${st.fireTest}|${st.sh1Alarm}|${st.sh2Alarm}|${st.alarm}|${st.spR1Act}|${st.spR2Act}|${st.kpbAct}|${st.overload}|${st.singlePhasing}`;
+                if (!force && this._lastVKey === vKey) return;
+                this._lastVKey = vKey;
+
+                const d = this.dom;
+                const el = d.ui;
                 if(el) { 
                     if (this.def.ui === 'sw-3') {
                         el.classList.remove('on-left', 'on-right');
-                        if (this.state.pos3 === 1) el.classList.add('on-left');
-                        else if (this.state.pos3 === 2) el.classList.add('on-right');
+                        if (st.pos3 === 1) el.classList.add('on-left');
+                        else if (st.pos3 === 2) el.classList.add('on-right');
                     } else if (this.def.ui === 'cab-light') {
-                        if (this.state.cabSw !== false) el.classList.add('sw-on'); else el.classList.remove('sw-on');
-                        if (this.state.on) el.classList.add('on'); else el.classList.remove('on');
+                        if (st.cabSw !== false) el.classList.add('sw-on'); else el.classList.remove('sw-on');
+                        if (st.on) el.classList.add('on'); else el.classList.remove('on');
                     } else if (this.def.ui === 'motor') {
-                        const mv = document.getElementById(`${this.id}-mvolt`);
-                        if (this.state.on) {
+                        const mv = d.mvolt;
+                        el.classList.remove('on', 'rev', 'single-phase');
+                        if (st.singlePhasing) {
+                            el.classList.add('single-phase');
+                            el.style.animationDuration = '';
+                            if (mv && this.def.type === 'Motor3P') mv.innerText = '2ФАЗЫ!';
+                        } else if (st.on) {
                             el.classList.add('on');
-                            if(this.state.rev) el.classList.add('rev'); else el.classList.remove('rev');
-                            let freq = this.state.motorFreq || 50;
+                            if(st.rev) el.classList.add('rev');
+                            let freq = st.motorFreq || 50;
                             let dur = Math.max(0.25, 50 / Math.max(2, freq));
                             el.style.animationDuration = `${dur.toFixed(2)}s`;
                             if (mv && this.def.type === 'Motor3P') mv.innerText = `${Math.round(freq)}Hz`;
                         } else {
-                            el.classList.remove('on', 'rev');
                             el.style.animationDuration = '';
                             if (mv && this.def.type === 'Motor3P') mv.innerText = this.def.v || '380V';
                         }
                     } else if (this.def.ui === 'damper-ui') {
-                        const ang = document.getElementById(`${this.id}-ang`);
-                        if (this.state.on) { el.classList.add('open'); if (ang) ang.innerText = '90°'; }
+                        const ang = d.ang;
+                        if (st.on) { el.classList.add('open'); if (ang) ang.innerText = '90°'; }
                         else { el.classList.remove('open'); if (ang) ang.innerText = '0°'; }
                     } else if (this.def.ui === 'valve-420') {
-                        const ang = document.getElementById(`${this.id}-ang`);
-                        const bar = document.getElementById(`${this.id}-bar`);
-                        const pct = this.state.on ? Math.round(this.state.valvePct || 0) : 0;
-                        if (ang) ang.innerText = this.state.on ? `${pct}%` : 'OFF';
+                        const ang = d.ang, bar = d.bar;
+                        const pct = st.on ? Math.round(st.valvePct || 0) : 0;
+                        if (ang) ang.innerText = st.on ? `${pct}%` : 'OFF';
                         if (bar) {
                             bar.style.transform = `rotate(${Math.round(pct * 0.9)}deg)`;
                             bar.style.background = pct > 5 ? '#4ade80' : '#f87171';
                         }
                     } else if (this.def.ui === 'meter-ui') {
-                        const kwhEl = document.getElementById(`${this.id}-kwh`);
-                        if (kwhEl) kwhEl.innerText = `${this.state.kwh.toFixed(1).padStart(6, '0')}kW`;
-                        if (this.state.on) el.classList.add('on'); else el.classList.remove('on');
+                        if (d.kwh) d.kwh.innerText = `${st.kwh.toFixed(1).padStart(6, '0')}kW`;
+                        if (st.on) el.classList.add('on'); else el.classList.remove('on');
                     } else if (this.def.ui === 'vmeter') {
-                        el.innerText = this.state.meterVal || (this.def.type === 'PanelAmmeter' ? '0.0mA' : '0V');
-                        if (this.state.on) el.classList.add('on'); else el.classList.remove('on');
+                        el.innerText = st.meterVal || (this.def.type === 'PanelAmmeter' ? '0.0mA' : '0V');
+                        if (st.on) el.classList.add('on'); else el.classList.remove('on');
                     } else if (this.def.ui === 'vfd-ui') {
-                        const fEl = document.getElementById(`${this.id}-freq`);
-                        const sEl = document.getElementById(`${this.id}-sub`);
-                        const rBtn = document.getElementById(`${this.id}-revbtn`);
-                        const mBtn = document.getElementById(`${this.id}-aimode`);
-                        if (rBtn) { if (this.state.localRev) rBtn.classList.add('active-rev'); else rBtn.classList.remove('active-rev'); }
-                        if (mBtn) mBtn.innerText = this.state.vfdAiMode || 'U';
+                        const fEl = d.freq, sEl = d.sub, rBtn = d.revbtn, mBtn = d.aimode;
+                        if (rBtn) { if (st.localRev) rBtn.classList.add('active-rev'); else rBtn.classList.remove('active-rev'); }
+                        if (mBtn) mBtn.innerText = st.vfdAiMode || 'U';
                         el.classList.remove('on', 'rev', 'tripped');
-                        const modePref = (this.state.vfdAiMode === 'I') ? 'I:' : 'U:';
-                        if (this.state.tripped) {
+                        const modePref = (st.vfdAiMode === 'I') ? 'I:' : 'U:';
+                        if (st.tripped) {
                             el.classList.add('tripped');
                             if(fEl) fEl.innerText = 'FAULT';
                             if(sEl) sEl.innerText = 'TRIP 95-98';
-                        } else if (!this.state.vfdPowered) {
+                        } else if (!st.vfdPowered) {
                             if(fEl) fEl.innerText = 'OFF';
-                            if(sEl) sEl.innerText = `${modePref}${this.state.freqSet}Hz`;
+                            if(sEl) sEl.innerText = `${modePref}${st.freqSet}Hz`;
                         } else {
                             el.classList.add('on');
-                            if (this.state.rev) el.classList.add('rev');
-                            if(fEl) fEl.innerText = `${this.state.curFreq.toFixed(1)}Hz`;
-                            if(sEl) sEl.innerText = `${this.state.on ? (this.state.rev ? '◀' : '▶') : '■'}${modePref}${this.state.freqSet}Hz`;
+                            if (st.rev) el.classList.add('rev');
+                            if(fEl) fEl.innerText = `${st.curFreq.toFixed(1)}Hz`;
+                            if(sEl) sEl.innerText = `${st.on ? (st.rev ? '◀' : '▶') : '■'}${modePref}${st.freqSet}Hz`;
                         }
                     } else {
-                        if (this.state.on) el.classList.add('on'); else el.classList.remove('on');
+                        if (st.on) el.classList.add('on'); else el.classList.remove('on');
+                        if (st.overload) el.classList.add('overload'); else el.classList.remove('overload');
                     }
                 }
 
                 if (this.def.ui === 'barrier-act') {
-                    const pwr = document.getElementById(`${this.id}-pwr`);
-                    const scr = document.getElementById(`${this.id}-scr`);
-                    if (pwr) { if (this.state.on) pwr.classList.add('on'); else pwr.classList.remove('on'); }
-                    if (scr) scr.innerText = this.state.on ? (this.state.barVal || 'OK') : 'OFF';
+                    if (d.pwr) { if (st.on) d.pwr.classList.add('on'); else d.pwr.classList.remove('on'); }
+                    if (d.scr) d.scr.innerText = st.on ? (st.barVal || 'OK') : 'OFF';
                 }
                 if (this.def.ui === 'barrier-pass') {
-                    const scr = document.getElementById(`${this.id}-scr`);
-                    if (scr) scr.innerText = this.state.barVal || 'Ex ia';
+                    if (d.scr) d.scr.innerText = st.barVal || 'Ex ia';
                 }
                 if (this.def.ui === 'sens-420') {
-                    const pwr = document.getElementById(`${this.id}-pwr`);
-                    const scr = document.getElementById(`${this.id}-scr`);
-                    if (pwr) { if (this.state.sensPowered) pwr.classList.add('on'); else pwr.classList.remove('on'); }
-                    if (scr) scr.innerText = this.state.sensPowered ? `${this.state.maVal}mA` : 'OFF';
+                    if (d.pwr) { if (st.sensPowered) d.pwr.classList.add('on'); else d.pwr.classList.remove('on'); }
+                    if (d.scr) d.scr.innerText = st.sensPowered ? `${st.maVal}mA` : 'OFF';
                 }
                 if (this.def.ui === 'trm-ui') {
-                    const pwr = document.getElementById(`${this.id}-pwr`);
-                    const scr = document.getElementById(`${this.id}-scr`);
-                    if (pwr) { if (this.state.on && this.state.aiMa >= this.state.trmSp) pwr.classList.add('on'); else pwr.classList.remove('on'); }
-                    if (scr) {
-                        if (!this.state.trmPowered) scr.innerText = 'OFF';
-                        else scr.innerText = `${this.state.aiMa || 0}/${this.state.trmSp}mA`;
+                    if (d.pwr) { if (st.on && st.aiMa >= st.trmSp) d.pwr.classList.add('on'); else d.pwr.classList.remove('on'); }
+                    if (d.scr) {
+                        if (!st.trmPowered) d.scr.innerText = 'OFF';
+                        else d.scr.innerText = `${st.aiMa || 0}/${st.trmSp}mA`;
                     }
                 }
                 if (this.def.ui === 'rip-ui') {
-                    const batBtn = document.getElementById(`${this.id}-bat`);
-                    if (batBtn) { if (this.state.batOn) batBtn.classList.add('on'); else batBtn.classList.remove('on'); }
+                    if (d.bat) { if (st.batOn) d.bat.classList.add('on'); else d.bat.classList.remove('on'); }
                 }
                 if (this.def.ui === 'bolid-sig') {
-                    const pwr = document.getElementById(`${this.id}-pwr`), sh1 = document.getElementById(`${this.id}-sh1`), sh2 = document.getElementById(`${this.id}-sh2`), tst = document.getElementById(`${this.id}-tst`);
-                    if (pwr) { if (this.state.on) pwr.classList.add('on'); else pwr.classList.remove('on'); }
-                    if (sh1) { sh1.className = 'plc-led'; if (this.state.on) sh1.classList.add(this.state.sh1Alarm ? 'alarm' : 'on'); }
-                    if (sh2) { sh2.className = 'plc-led'; if (this.state.on) sh2.classList.add(this.state.sh2Alarm ? 'alarm' : 'on'); }
-                    if (tst) { if (this.state.alarm) { tst.classList.add('fire-on'); tst.innerText = 'ПОЖАР!'; } else { tst.classList.remove('fire-on'); tst.innerText = 'ТЕСТ ПОЖ'; } }
+                    if (d.pwr) { if (st.on) d.pwr.classList.add('on'); else d.pwr.classList.remove('on'); }
+                    if (d.sh1) { d.sh1.className = 'plc-led'; if (st.on) d.sh1.classList.add(st.sh1Alarm ? 'alarm' : 'on'); }
+                    if (d.sh2) { d.sh2.className = 'plc-led'; if (st.on) d.sh2.classList.add(st.sh2Alarm ? 'alarm' : 'on'); }
+                    if (d.tst) { if (st.alarm) { d.tst.classList.add('fire-on'); d.tst.innerText = 'ПОЖАР!'; } else { d.tst.classList.remove('fire-on'); d.tst.innerText = 'ТЕСТ ПОЖ'; } }
                 }
                 if (this.def.ui === 'bolid-sp1') {
-                    const pwr = document.getElementById(`${this.id}-pwr`), r1 = document.getElementById(`${this.id}-r1`), r2 = document.getElementById(`${this.id}-r2`);
-                    if (pwr) { if (this.state.on) pwr.classList.add('on'); else pwr.classList.remove('on'); }
-                    if (r1) { if (this.state.spR1Act) r1.classList.add('fire-on'); else r1.classList.remove('fire-on'); }
-                    if (r2) { if (this.state.spR2Act) r2.classList.add('fire-on'); else r2.classList.remove('fire-on'); }
+                    if (d.pwr) { if (st.on) d.pwr.classList.add('on'); else d.pwr.classList.remove('on'); }
+                    if (d.r1) { if (st.spR1Act) d.r1.classList.add('fire-on'); else d.r1.classList.remove('fire-on'); }
+                    if (d.r2) { if (st.spR2Act) d.r2.classList.add('fire-on'); else d.r2.classList.remove('fire-on'); }
                 }
                 if (this.def.ui === 'bolid-kpb') {
-                    const pwr = document.getElementById(`${this.id}-pwr`), kpb = document.getElementById(`${this.id}-kpb`);
-                    if (pwr) { if (this.state.on) pwr.classList.add('on'); else pwr.classList.remove('on'); }
-                    if (kpb) { if (this.state.kpbAct) kpb.classList.add('fire-on'); else kpb.classList.remove('fire-on'); }
+                    if (d.pwr) { if (st.on) d.pwr.classList.add('on'); else d.pwr.classList.remove('on'); }
+                    if (d.kpb) { if (st.kpbAct) d.kpb.classList.add('fire-on'); else d.kpb.classList.remove('fire-on'); }
                 }
                 if (this.def.ui === 'do-ao') {
-                    const b1 = document.getElementById(`${this.id}-do1`), b2 = document.getElementById(`${this.id}-do2`), ao = document.getElementById(`${this.id}-ao`), md = document.getElementById(`${this.id}-mode`);
-                    if (b1) { if (this.state.do1) b1.classList.add('on'); else b1.classList.remove('on'); }
-                    if (b2) { if (this.state.do2) b2.classList.add('on'); else b2.classList.remove('on'); }
-                    if (md) md.innerText = (this.state.scadaMode === 'I') ? 'mA' : 'V';
-                    if (ao) ao.innerText = (this.state.scadaMode === 'I') ? `${this.state.maVal}mA` : `${this.state.aoVal}V`;
+                    if (d.do1) { if (st.do1) d.do1.classList.add('on'); else d.do1.classList.remove('on'); }
+                    if (d.do2) { if (st.do2) d.do2.classList.add('on'); else d.do2.classList.remove('on'); }
+                    if (d.mode) d.mode.innerText = (st.scadaMode === 'I') ? 'mA' : 'V';
+                    if (d.ao) d.ao.innerText = (st.scadaMode === 'I') ? `${st.maVal}mA` : `${st.aoVal}V`;
                 }
                 if (this.def.ui === 'hmi') {
-                    const pwr = document.getElementById(`${this.id}-pwr`), f1 = document.getElementById(`${this.id}-f1`), f2 = document.getElementById(`${this.id}-f2`), st = document.getElementById(`${this.id}-st`), ao = document.getElementById(`${this.id}-ao`), md = document.getElementById(`${this.id}-mode`);
-                    if (pwr) { if (this.state.on) pwr.classList.add('on'); else pwr.classList.remove('on'); }
-                    if (f1) { if (this.state.on && this.state.hmiF1) f1.classList.add('on'); else f1.classList.remove('on'); }
-                    if (f2) { if (this.state.on && this.state.hmiF2) f2.classList.add('on'); else f2.classList.remove('on'); }
-                    if (st) { if (this.state.on && this.state.hmiStat) st.classList.add('on'); else st.classList.remove('on'); }
-                    if (md) md.innerText = this.state.hmiMode || 'V';
-                    if (ao) {
-                        if (!this.state.on) ao.innerText = 'OFF';
-                        else if (this.state.hmiMode === 'I') ao.innerText = `${this.state.maVal}mA`;
-                        else if (this.state.hmiMode === 'AI') ao.innerText = `IN:${this.state.aiMa || 0}mA`;
-                        else ao.innerText = `${this.state.aoVal}V`;
+                    if (d.pwr) { if (st.on) d.pwr.classList.add('on'); else d.pwr.classList.remove('on'); }
+                    if (d.f1) { if (st.on && st.hmiF1) d.f1.classList.add('on'); else d.f1.classList.remove('on'); }
+                    if (d.f2) { if (st.on && st.hmiF2) d.f2.classList.add('on'); else d.f2.classList.remove('on'); }
+                    if (d.st) { if (st.on && st.hmiStat) d.st.classList.add('on'); else d.st.classList.remove('on'); }
+                    if (d.mode) d.mode.innerText = st.hmiMode || 'V';
+                    if (d.ao) {
+                        if (!st.on) d.ao.innerText = 'OFF';
+                        else if (st.hmiMode === 'I') d.ao.innerText = `${st.maVal}mA`;
+                        else if (st.hmiMode === 'AI') d.ao.innerText = `IN:${st.aiMa || 0}mA`;
+                        else d.ao.innerText = `${st.aoVal}V`;
                     }
                 }
                 if (this.def.type === 'AuxContact' && this.attachedTo) {
-                    if (this.state.on) this.elem.style.boxShadow = '0 0 10px #38bdf8';
+                    if (st.on) this.elem.style.boxShadow = '0 0 10px #38bdf8';
                     else this.elem.style.boxShadow = '2px 10px 25px rgba(0,0,0,0.8)';
                 }
-                if(this.state.burned) this.elem.classList.add('burned'); else this.elem.classList.remove('burned');
-                const btn = document.getElementById(`${this.id}-trip`);
-                if(btn) { if(this.state.tripped) btn.classList.add('tripped'); else btn.classList.remove('tripped'); }
+                if(st.burned) this.elem.classList.add('burned'); else this.elem.classList.remove('burned');
+                if(d.trip) { if(st.tripped) d.trip.classList.add('tripped'); else d.trip.classList.remove('tripped'); }
+                if(d.fuse) { if(st.tripped) d.fuse.classList.add('tripped'); else d.fuse.classList.remove('tripped'); }
                 if(this.def.type === 'PLC') {
-                    const l1 = document.getElementById(`${this.id}-l1`), l2 = document.getElementById(`${this.id}-l2`);
-                    if(l1) { if(this.state.plcQ1) l1.classList.add('on'); else l1.classList.remove('on'); }
-                    if(l2) { if(this.state.plcQ2) l2.classList.add('on'); else l2.classList.remove('on'); }
+                    if(d.l1) { if(st.plcQ1) d.l1.classList.add('on'); else d.l1.classList.remove('on'); }
+                    if(d.l2) { if(st.plcQ2) d.l2.classList.add('on'); else d.l2.classList.remove('on'); }
                 }
             }
         }
@@ -2182,7 +2466,9 @@
             };
         }
 
-        function saveToLocalStorage() {
+        function saveToLocalStorage(skipHistory = false) {
+            markCircuitDirty();
+            if (!skipHistory) pushHistory();
             try { localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeProject())); } catch (e) {}
         }
 
@@ -2191,6 +2477,7 @@
             numRows = Math.max(1, parseInt(data.numRows) || 5);
             idCounters = data.idCounters && typeof data.idCounters === 'object' ? { ...data.idCounters } : {};
             components = []; wires = []; container.innerHTML = ''; svg.innerHTML = '';
+            tracedWireId = null;
             drawBackground();
 
             data.components.forEach(cd => {
@@ -2208,20 +2495,28 @@
                     const comp1 = components.find(x => x.id === wd.c1), comp2 = components.find(x => x.id === wd.c2);
                     if (comp1 && comp2 && comp1.terminals[wd.t1] && comp2.terminals[wd.t2]) {
                         const term1 = comp1.terminals[wd.t1], term2 = comp2.terminals[wd.t2];
-                        wires.push({ id: wd.id || ('w_' + Math.random().toString(36).substr(2, 8)), t1: { comp: comp1, tid: wd.t1, elem: term1.elem }, t2: { comp: comp2, tid: wd.t2, elem: term2.elem }, dom: null });
+                        wires.push({ id: wd.id || ('w_' + Math.random().toString(36).substr(2, 8)), t1: { comp: comp1, tid: wd.t1, elem: term1.elem }, t2: { comp: comp2, tid: wd.t2, elem: term2.elem }, dom: null, _lastCls: '' });
                         term1.connections.push({ c: comp2.id, t: wd.t2 });
                         term2.connections.push({ c: comp1.id, t: wd.t1 });
                     }
                 });
             }
-            setTimeout(() => { drawWires(); updateVisuals(); }, 40);
+            markCircuitDirty();
+            setTimeout(() => { drawWires(); updateVisuals(true); }, 30);
             return true;
         }
 
         function loadFromLocalStorage() {
             try {
                 const raw = localStorage.getItem(STORAGE_KEY);
-                return raw ? loadProjectData(JSON.parse(raw)) : false;
+                if (!raw) return false;
+                const ok = loadProjectData(JSON.parse(raw));
+                if (ok) {
+                    undoStack = [JSON.stringify(serializeProject())];
+                    redoStack = [];
+                    updateHistoryButtons();
+                }
+                return ok;
             } catch (e) { return false; }
         }
 
@@ -2272,6 +2567,47 @@
                 saveToLocalStorage();
             }
         };
+
+        // Кнопка «Т» (Тест) на дифференциальном автомате АВДТ / УЗО
+        window.testRcd = (id, ev) => {
+            if (ev) ev.stopPropagation();
+            if (suppressNextClick || !isInteractiveMode()) return;
+            const c = components.find(x => x.id === id);
+            if (!c || c.state.burned) return;
+            SoundFX.button(true);
+            if (!c.state.on) {
+                showNotification(`${c.name.replace(/\n/g, ' ')}: Включите УЗО перед проверкой кнопкой «Т»`, 'info', 2200);
+                return;
+            }
+            const pN = engineState.potentials[`${c.id}_N_in`] || 'NONE';
+            const hasL = ['1', '3', '5'].some(t => (engineState.potentials[`${c.id}_${t}`] || '').includes('L'));
+            if (hasL && pN === 'N_220') {
+                c.state.on = false;
+                SoundFX.breaker(false);
+                saveToLocalStorage();
+                showNotification(`✅ Тест УЗО ${c.name.replace(/\n/g, ' ')} успешен — дифзащита исправна!`, 'info', 2600);
+            } else {
+                showNotification(`${c.name.replace(/\n/g, ' ')}: Нет входного питания L и N для работы цепи теста «Т»`, 'burn', 2600);
+            }
+        };
+
+        // Замена перегоревшей плавкой вставки предохранителя FU
+        window.replaceFuse = (id, ev) => {
+            if (ev) ev.stopPropagation();
+            if (suppressNextClick || !isInteractiveMode()) return;
+            const c = components.find(x => x.id === id);
+            if (!c) return;
+            if (c.state.tripped) {
+                c.state.tripped = false;
+                SoundFX.breaker(true);
+                saveToLocalStorage();
+                showNotification(`🔧 Плавкая вставка предохранителя ${c.name.replace(/\n/g, ' ')} заменена!`, 'info', 2200);
+            } else {
+                SoundFX.button(true);
+                showNotification(`Предохранитель ${c.name.replace(/\n/g, ' ')} исправен (вставка цела)`, 'info', 1800);
+            }
+        };
+
         window.toggleCabLight = (id) => {
             if(suppressNextClick || !isInteractiveMode()) return;
             const c = components.find(x=>x.id===id);
@@ -2295,7 +2631,11 @@
         window.pressBtn = (id, state) => {
             if(suppressNextClick || !isInteractiveMode()) return;
             const c = components.find(x=>x.id===id);
-            if(c && !c.state.burned && c.state.on !== state) { c.state.on = state; SoundFX.button(state); }
+            if(c && !c.state.burned && c.state.on !== state) {
+                c.state.on = state;
+                markCircuitDirty();
+                SoundFX.button(state);
+            }
         };
         window.tripComp = (id) => {
             if(suppressNextClick || !isInteractiveMode()) return;
@@ -2415,6 +2755,7 @@
         function initSandbox() {
             numRows = 5;
             components = []; wires = []; idCounters = {}; container.innerHTML = ''; svg.innerHTML = '';
+            tracedWireId = null;
             components.push(new Component('In_380', 0, 80, 'СЕТЬ 1'));
             components.push(new Component('In_220', 0, 165, 'СЕТЬ 2'));
             btnVoltVal.innerText = '';
@@ -2499,6 +2840,7 @@
         function setMode(newMode) {
             if (editingLabelComp) closeLabelEditor(true);
             mode = newMode;
+            tracedWireId = null;
             SoundFX.button(true);
             document.querySelectorAll('#toolbar .btn').forEach(b => b.classList.remove('active'));
             if(mode==='wire') document.getElementById('btn-wire').classList.add('active');
@@ -2580,6 +2922,10 @@
 
         boardInner.addEventListener('click', () => {
             if (editingLabelComp) closeLabelEditor(true);
+            if (tracedWireId) {
+                tracedWireId = null;
+                updateVisuals();
+            }
         });
 
         function getUnitRoot(comp) {
@@ -2632,13 +2978,9 @@
             return (last.xPx + last.def.w) - first.xPx;
         }
 
-        function animateWireFollow(duration = 300) {
-            const start = performance.now();
-            function frame(now) {
-                drawWires();
-                if (now - start < duration) requestAnimationFrame(frame);
-            }
-            requestAnimationFrame(frame);
+        function animateWireFollow(duration = 260) {
+            drawWires();
+            setTimeout(drawWires, duration);
         }
 
         function selectCompForMove(comp) {
@@ -2682,7 +3024,7 @@
             SoundFX.breaker(true);
             saveToLocalStorage();
             setMode('wire');
-            animateWireFollow(320);
+            animateWireFollow(260);
         }
 
         function attachMechInterlock(clickedCont) {
@@ -2723,7 +3065,7 @@
             saveToLocalStorage();
             showNotification(`Установлена мех. блокировка ${mb.name} между ${left.name.replace(/\n/g, ' ')} и ${right.name.replace(/\n/g, ' ')}`, 'info', 3000);
             setMode('wire');
-            animateWireFollow(320);
+            animateWireFollow(260);
         }
 
         // Измерение для переносного Тестера (и вольты, и миллиамперы)
@@ -2788,6 +3130,32 @@
             }
         }
 
+        // Быстрый поиск по каталогу приборов
+        window.filterCatalog = (query) => {
+            const q = (query || '').trim().toLowerCase();
+            const groups = document.querySelectorAll('#catalog-list .acc-group');
+            groups.forEach((group, idx) => {
+                const items = group.querySelectorAll('.cat-item');
+                let hasVisible = false;
+                items.forEach(item => {
+                    const txt = (item.getAttribute('data-search') || '').toLowerCase();
+                    if (!q || txt.includes(q)) {
+                        item.style.display = 'grid';
+                        hasVisible = true;
+                    } else {
+                        item.style.display = 'none';
+                    }
+                });
+                if (!q) {
+                    group.style.display = 'block';
+                    if (idx === 0) group.classList.add('open'); else group.classList.remove('open');
+                } else {
+                    group.style.display = hasVisible ? 'block' : 'none';
+                    if (hasVisible) group.classList.add('open'); else group.classList.remove('open');
+                }
+            });
+        };
+
         function populateCatalog() {
             const list = document.getElementById('catalog-list'); list.innerHTML = '';
             const groups = {};
@@ -2807,6 +3175,7 @@
                 const body = document.createElement('div'); body.className = 'acc-body';
                 groups[catKey].forEach(d => {
                     const item = document.createElement('div'); item.className = 'cat-item';
+                    item.setAttribute('data-search', `${d.id} ${d.prefix} ${d.title} ${d.desc}`);
                     item.innerHTML = `<div><div class="cat-title">${d.prefix} • ${d.title}</div><div class="cat-desc">${d.desc}</div></div><div class="cat-w">${d.w}mm</div>`;
                     
                     let catPressTimer = null;
@@ -2833,7 +3202,11 @@
             });
         }
         
-        function showCatalog() { catPanel.classList.add(window.innerWidth < 768 ? 'show-mobile' : 'show-desktop'); }
+        function showCatalog() {
+            const sInp = document.getElementById('catalog-search');
+            if (sInp && sInp.value) { sInp.value = ''; filterCatalog(''); }
+            catPanel.classList.add(window.innerWidth < 768 ? 'show-mobile' : 'show-desktop');
+        }
         function closeCatalog(keepMode = false) {
             catPanel.classList.remove('show-mobile', 'show-desktop');
             if(!keepMode && mode === 'build') setMode('wire');
@@ -2876,9 +3249,8 @@
                 movingComp = null;
                 dropZonesContainer.innerHTML = '';
                 saveToLocalStorage();
-                // Остаемся в режиме «Двигать», чтобы можно было сразу выбрать следующий прибор!
                 showNotification(`${movedName} перемещен — выберите следующий прибор для перемещения`, 'info', 2200);
-                animateWireFollow(320);
+                animateWireFollow(260);
             } else {
                 if (buildItem === 'TermGroup10' || buildItem === 'TermGroup25') {
                     const count = buildItem === 'TermGroup10' ? 10 : 25;
@@ -2886,7 +3258,7 @@
                 } else {
                     components.push(new Component(buildItem, targetRow, startX));
                 }
-                SoundFX.breaker(true); saveToLocalStorage(); setMode('wire'); animateWireFollow(320);
+                SoundFX.breaker(true); saveToLocalStorage(); setMode('wire'); animateWireFollow(260);
             }
         }
 
@@ -2954,16 +3326,17 @@
             }
         }
 
-        function deleteComp(id) {
+        function deleteComp(id, isSubCall = false) {
             const c = components.find(x => x.id === id); if(!c) return;
             if (editingLabelComp && editingLabelComp.id === id) editingLabelComp = null;
             let attached = components.filter(x => x.attachedTo === id || x.interlockRightId === id);
-            attached.forEach(a => deleteComp(a.id));
+            attached.forEach(a => deleteComp(a.id, true));
 
             wires = wires.filter(w => w.t1.comp.id !== id && w.t2.comp.id !== id);
             components.forEach(oc => { Object.values(oc.terminals).forEach(t => { t.connections = t.connections.filter(cx => cx.c !== id); })});
             components = components.filter(x => x.id !== id);
-            c.elem.remove(); saveToLocalStorage(); drawWires();
+            c.elem.remove();
+            if (!isSubCall) { saveToLocalStorage(); drawWires(); }
         }
 
         function handleWire(comp, tid, elem) {
@@ -3013,7 +3386,7 @@
                     if(selectedTerminal.comp.id === comp.id && selectedTerminal.tid === tid) {
                         elem.classList.remove('selected'); selectedTerminal = null; return;
                     }
-                    wires.push({ id: 'w_'+Date.now(), t1: selectedTerminal, t2: {comp, tid, elem}, dom: null });
+                    wires.push({ id: 'w_'+Date.now()+'_'+Math.random().toString(36).substr(2,4), t1: selectedTerminal, t2: {comp, tid, elem}, dom: null, _lastCls: '' });
                     selectedTerminal.comp.terminals[selectedTerminal.tid].connections.push({c: comp.id, t: tid});
                     comp.terminals[tid].connections.push({c: selectedTerminal.comp.id, t: selectedTerminal.tid});
                     selectedTerminal.elem.classList.remove('selected'); selectedTerminal = null;
@@ -3025,13 +3398,14 @@
         // Вычисление CSS-класса провода: обесточенные провода ('NONE') строго серые без подсветки!
         function computeWireClass(w) {
             let clsWire = 'wire';
+            if (w.id === tracedWireId) clsWire += ' wire-trace';
             if (mode === 'delete') return clsWire + ' delete-mode';
 
             let pot1 = engineState.potentials[`${w.t1.comp.id}_${w.t1.tid}`] || 'NONE';
             let pot2 = engineState.potentials[`${w.t2.comp.id}_${w.t2.tid}`] || 'NONE';
             let pot = pot1 !== 'NONE' ? pot1 : pot2;
 
-            if (pot === 'NONE') return clsWire; // Строго матовый серый #475569 без свечения
+            if (pot === 'NONE') return clsWire;
 
             let isEx = Boolean(w.t1.comp.terminals[w.t1.tid]?.ex || w.t2.comp.terminals[w.t2.tid]?.ex || pot.includes('EX_'));
 
@@ -3049,8 +3423,9 @@
         }
 
         function drawWires() {
-            svg.innerHTML = ''; const bR = boardInner.getBoundingClientRect(); if(bR.width === 0 || bR.height === 0) return;
+            svg.innerHTML = '';
             const s = getScale();
+            const logicW = 1600 * s;
 
             wires.forEach((w, idx) => {
                 const p1 = w.t1.comp.getPos(w.t1.tid), p2 = w.t2.comp.getPos(w.t2.tid);
@@ -3063,7 +3438,7 @@
                 };
                 
                 let hTray1 = getTrayY(w.t1.comp, w.t1.tid) + offset, hTray2 = getTrayY(w.t2.comp, w.t2.tid) + offset;
-                let vTray = (GRID.vTraysPct.reduce((p, c) => Math.abs(c - (p1.x/bR.width*100)) < Math.abs(p - (p1.x/bR.width*100)) ? c : p)/100)*bR.width + offset;
+                let vTray = (GRID.vTraysPct.reduce((p, c) => Math.abs(c - (p1.x/logicW*100)) < Math.abs(p - (p1.x/logicW*100)) ? c : p)/100)*logicW + offset;
                 
                 let d = `M ${p1.x} ${p1.y} L ${p1.x} ${hTray1}`;
                 if(Math.abs(hTray1 - hTray2) < (10 * s)) d += ` L ${p2.x} ${hTray1} L ${p2.x} ${p2.y}`; 
@@ -3071,14 +3446,34 @@
 
                 const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
                 path.setAttribute('d', d);
-                path.setAttribute('class', computeWireClass(w));
+                const cls = computeWireClass(w);
+                path.setAttribute('class', cls);
+                w._lastCls = cls;
 
-                path.onclick = () => { if(mode==='delete') {
-                    SoundFX.cut();
-                    w.t1.comp.terminals[w.t1.tid].connections = w.t1.comp.terminals[w.t1.tid].connections.filter(x => x.c !== w.t2.comp.id);
-                    w.t2.comp.terminals[w.t2.tid].connections = w.t2.comp.terminals[w.t2.tid].connections.filter(x => x.c !== w.t1.comp.id);
-                    wires = wires.filter(x => x.id !== w.id); saveToLocalStorage(); drawWires();
-                }};
+                path.onclick = (e) => {
+                    e.stopPropagation();
+                    if(mode === 'delete') {
+                        SoundFX.cut();
+                        w.t1.comp.terminals[w.t1.tid].connections = w.t1.comp.terminals[w.t1.tid].connections.filter(x => !(x.c === w.t2.comp.id && x.t === w.t2.tid));
+                        w.t2.comp.terminals[w.t2.tid].connections = w.t2.comp.terminals[w.t2.tid].connections.filter(x => !(x.c === w.t1.comp.id && x.t === w.t1.tid));
+                        wires = wires.filter(x => x.id !== w.id);
+                        saveToLocalStorage();
+                        drawWires();
+                    } else {
+                        // Подсветка трассы провода и подсказка соединения при клике
+                        SoundFX.button(true);
+                        tracedWireId = (tracedWireId === w.id) ? null : w.id;
+                        if (tracedWireId && path.parentNode) {
+                            path.parentNode.appendChild(path); // Поднимаем выбранный провод поверх остальных в SVG
+                        }
+                        const n1 = w.t1.comp.name.replace(/\n/g, ' ');
+                        const n2 = w.t2.comp.name.replace(/\n/g, ' ');
+                        const l1 = (w.t1.comp.def.terms.find(t => t.id === w.t1.tid)?.l || w.t1.tid).split('(')[0];
+                        const l2 = (w.t2.comp.def.terms.find(t => t.id === w.t2.tid)?.l || w.t2.tid).split('(')[0];
+                        showNotification(`🔌 Кабель: ${n1} (кл. ${l1}) ➔ ${n2} (кл. ${l2})`, 'info', 3400);
+                        updateVisuals();
+                    }
+                };
                 svg.appendChild(path); w.dom = path;
             });
             updateVisuals();
@@ -3099,519 +3494,642 @@
         function burnComponent(c) {
             if(c.state.burned) return;
             c.state.burned = true; c.state.on = false;
+            markCircuitDirty();
             SoundFX.burn();
             showNotification(`🔥 СГОРЕЛО: ${c.name.replace(/\n/g, ' ')} — ${c.def.title}`, 'burn', 3600);
-            c.updateVisuals();
-            setTimeout(() => { c.state.burned = false; c.updateVisuals(); }, 3000);
+            c.updateVisuals(true);
+            setTimeout(() => { c.state.burned = false; markCircuitDirty(); c.updateVisuals(true); }, 3000);
         }
 
         function engineTick() {
-            let changed = true, iters = 0;
-            let lastDS = null;
-            
+            const hasDynamicActive = components.some(c =>
+                (c.def.type === 'Timer' && c.state.on) ||
+                (c.def.type === 'VFD' && (c.state.vfdPowered || c.state.curFreq > 0)) ||
+                (c.def.type === 'Siren' && (c.state.on || (engineState.potentials[`${c.id}_x1`] && engineState.potentials[`${c.id}_x1`] !== 'NONE'))) ||
+                (c.def.type === 'Motor3P' && c.state.singlePhasing) ||
+                (c.def.type === 'AuxContact' && c.attachedTo)
+            );
+
             components.forEach(c => {
                 if (c.def.type === 'AuxContact' && c.attachedTo) {
                     let parent = components.find(x => x.id === c.attachedTo);
-                    if (parent && c.state.on !== parent.state.on) { c.state.on = parent.state.on; changed = true; }
+                    if (parent && c.state.on !== parent.state.on) { c.state.on = parent.state.on; circuitDirty = true; }
                 }
             });
 
-            while(changed && iters < 30) {
-                changed = false; iters++;
-                let ds = new DisjointSet(); let curShort = false;
-                lastDS = ds;
+            if (circuitDirty || hasDynamicActive) {
+                circuitDirty = false;
+                let changed = true, iters = 0;
+                let lastDS = null;
 
-                components.forEach(c => {
-                    Object.keys(c.terminals).forEach(t => {
-                        let nid = `${c.id}_${t}`; ds.makeSet(nid);
-                        c.terminals[t].connections.forEach(conn => ds.union(nid, `${conn.c}_${conn.t}`));
+                while(changed && iters < 30) {
+                    changed = false; iters++;
+                    let ds = new DisjointSet();
+                    let rcboDS = new DisjointSet(); // Граф без полюсов RCBO для контроля дифференциального тока утечки
+                    let curShort = false;
+                    lastDS = ds;
+
+                    components.forEach(c => {
+                        Object.keys(c.terminals).forEach(t => {
+                            let nid = `${c.id}_${t}`;
+                            ds.makeSet(nid);
+                            rcboDS.makeSet(nid);
+                            c.terminals[t].connections.forEach(conn => {
+                                ds.union(nid, `${conn.c}_${conn.t}`);
+                                rcboDS.union(nid, `${conn.c}_${conn.t}`);
+                            });
+                        });
                     });
-                });
 
-                // ФАЗА 1: Замыкание внутренних сухих контактов в симуляторе
-                components.forEach(c => {
-                    if (!c.def.type) return;
-                    const bridge = (t1, t2) => { if(c.terminals[t1] && c.terminals[t2]) ds.union(`${c.id}_${t1}`, `${c.id}_${t2}`); };
-                    
-                    if(['Breaker', 'Breaker3P', 'BreakerShunt', 'RCBO', 'Switch'].includes(c.def.type) || c.def.type === 'Button_NO') {
-                        if(c.state.on) { bridge('1','2'); bridge('3','4'); bridge('5','6'); bridge('7','8'); bridge('N_in', 'N_out'); }
-                    }
-                    if(c.def.type === 'EnergyMeter' && !c.state.burned) {
-                        bridge('L1_in', 'L1_out'); bridge('L2_in', 'L2_out'); bridge('L3_in', 'L3_out'); bridge('N_in', 'N_out');
-                    }
-                    if(c.def.type === 'Button_NC' && !c.state.on) { bridge('1','2'); bridge('3','4'); bridge('11','12'); } 
-                    if(c.def.type === 'ButtonFull' || c.def.type === 'FireSensor') {
-                        if(c.state.on) { bridge('13', '14'); } else { bridge('21', '22'); }
-                    }
-                    if(c.def.type === 'Switch3') {
-                        if(c.state.pos3 === 1) { bridge('1','2'); } else if(c.state.pos3 === 2) { bridge('3','4'); bridge('3','2'); }
-                    }
-                    if(c.def.type === 'Changeover3P') {
-                        if(c.state.pos3 === 1) { bridge('1L1','T1'); bridge('1L2','T2'); bridge('1L3','T3'); }
-                        else if(c.state.pos3 === 2) { bridge('2L1','T1'); bridge('2L2','T2'); bridge('2L3','T3'); }
-                    }
-                    if(c.def.type === 'AuxContact') {
-                        if(c.state.on) { bridge('11', '14'); } else { bridge('11', '12'); }
-                    }
-                    if(c.def.type === 'BarrierPass' && !c.state.burned) {
-                        bridge('IP', 'OP'); bridge('IM', 'OM');
-                    }
-                    if(c.def.type === 'TRM' && !c.state.burned) {
-                        if(c.state.on) {
-                            if(c.state.aiMa >= c.state.trmSp) { bridge('11', '14'); } else { bridge('11', '12'); }
+                    // ФАЗА 1: Замыкание внутренних сухих контактов в симуляторе
+                    components.forEach(c => {
+                        if (!c.def.type) return;
+                        const bridge = (t1, t2, skipRcboDS = false) => {
+                            if(c.terminals[t1] && c.terminals[t2]) {
+                                ds.union(`${c.id}_${t1}`, `${c.id}_${t2}`);
+                                if (!skipRcboDS) rcboDS.union(`${c.id}_${t1}`, `${c.id}_${t2}`);
+                            }
+                        };
+                        
+                        if(['Breaker', 'Breaker3P', 'BreakerShunt', 'Switch'].includes(c.def.type) || c.def.type === 'Button_NO') {
+                            if(c.state.on) { bridge('1','2'); bridge('3','4'); bridge('5','6'); bridge('7','8'); }
                         }
-                    }
-                    if(c.def.type === 'Relay' && !c.state.burned) {
-                        if(c.state.on) { bridge('11', '14'); bridge('21', '24'); } else { bridge('11', '12'); bridge('21', '22'); }
-                    }
-                    if((c.def.type === 'ImpulseRelay' || c.def.type === 'SSR') && !c.state.burned) {
-                        if(c.state.on) { bridge('1', '2'); }
-                    }
-                    if(c.def.type === 'SoftStarter' && !c.state.burned) {
-                        if(c.state.on) { bridge('L1', 'T1'); bridge('L2', 'T2'); bridge('L3', 'T3'); bridge('13', '14'); }
-                    }
-                    if(c.def.type === 'Timer' && !c.state.burned) {
-                        if(c.state.on && timerStates[c.id] > 20) { bridge('15', '18'); bridge('13', '14'); } else { bridge('15', '16'); }
-                    }
-                    if((c.def.type === 'VoltageRelay' || c.def.type === 'PhaseRelay') && !c.state.burned) {
-                        if(c.state.on) bridge('11', '14'); else bridge('11', '12');
-                    }
-                    if(c.def.type === 'ATS' && !c.state.burned) {
-                        if(c.state.atsMode === 1) { bridge('L1', 'Out'); bridge('N', 'N_o'); } 
-                        else if(c.state.atsMode === 2) { bridge('L2', 'Out'); bridge('N', 'N_o'); } 
-                    }
-                    if(c.def.type === 'VFD' && !c.state.burned) {
-                        if((c.state.on || c.state.curFreq > 0.5) && !c.state.tripped) { 
-                            if (c.state.rev) { bridge('L1', 'V'); bridge('L2', 'U'); bridge('L3', 'W'); }
-                            else { bridge('L1', 'U'); bridge('L2', 'V'); bridge('L3', 'W'); }
-                            bridge('13', '14');
+                        if(c.def.type === 'RCBO') {
+                            if(c.state.on) {
+                                bridge('1','2', true); bridge('3','4', true); bridge('5','6', true); bridge('N_in', 'N_out', true);
+                            }
                         }
-                        if(c.state.tripped) { bridge('97', '98'); } else { bridge('95', '96'); }
-                    }
-                    if(['Contactor', 'ContactorTherm'].includes(c.def.type) && !c.state.burned) {
-                        if(c.state.on) { 
-                            bridge('L1', 'T1'); bridge('L2', 'T2'); bridge('L3', 'T3'); 
-                            bridge('13', '14'); bridge('53', '54'); bridge('83', '84'); bridge('43', '44');
-                        } else { 
-                            bridge('61', '62'); bridge('71', '72'); bridge('21', '22'); bridge('31', '32');
+                        if(c.def.type === 'EnergyMeter' && !c.state.burned) {
+                            bridge('L1_in', 'L1_out'); bridge('L2_in', 'L2_out'); bridge('L3_in', 'L3_out'); bridge('N_in', 'N_out');
                         }
-                        if(c.def.type === 'ContactorTherm') {
+                        if(c.def.type === 'Button_NC' && !c.state.on) { bridge('1','2'); bridge('3','4'); bridge('11','12'); } 
+                        if(c.def.type === 'ButtonFull' || c.def.type === 'FireSensor') {
+                            if(c.state.on) { bridge('13', '14'); } else { bridge('21', '22'); }
+                        }
+                        if(c.def.type === 'Switch3') {
+                            if(c.state.pos3 === 1) { bridge('1','2'); } else if(c.state.pos3 === 2) { bridge('3','4'); bridge('3','2'); }
+                        }
+                        if(c.def.type === 'Changeover3P') {
+                            if(c.state.pos3 === 1) { bridge('1L1','T1'); bridge('1L2','T2'); bridge('1L3','T3'); }
+                            else if(c.state.pos3 === 2) { bridge('2L1','T1'); bridge('2L2','T2'); bridge('2L3','T3'); }
+                        }
+                        if(c.def.type === 'AuxContact') {
+                            if(c.state.on) { bridge('11', '14'); } else { bridge('11', '12'); }
+                        }
+                        if(c.def.type === 'BarrierPass' && !c.state.burned) {
+                            bridge('IP', 'OP'); bridge('IM', 'OM');
+                        }
+                        if(c.def.type === 'TRM' && !c.state.burned) {
+                            if(c.state.on) {
+                                if(c.state.aiMa >= c.state.trmSp) { bridge('11', '14'); } else { bridge('11', '12'); }
+                            }
+                        }
+                        if(c.def.type === 'Relay' && !c.state.burned) {
+                            if(c.state.on) { bridge('11', '14'); bridge('21', '24'); } else { bridge('11', '12'); bridge('21', '22'); }
+                        }
+                        if((c.def.type === 'ImpulseRelay' || c.def.type === 'SSR') && !c.state.burned) {
+                            if(c.state.on) { bridge('1', '2'); }
+                        }
+                        if(c.def.type === 'SoftStarter' && !c.state.burned) {
+                            if(c.state.on) { bridge('L1', 'T1'); bridge('L2', 'T2'); bridge('L3', 'T3'); bridge('13', '14'); }
+                        }
+                        if(c.def.type === 'Timer' && !c.state.burned) {
+                            if(c.state.on && timerStates[c.id] > 20) { bridge('15', '18'); bridge('13', '14'); } else { bridge('15', '16'); }
+                        }
+                        if((c.def.type === 'VoltageRelay' || c.def.type === 'PhaseRelay') && !c.state.burned) {
+                            if(c.state.on) bridge('11', '14'); else bridge('11', '12');
+                        }
+                        if(c.def.type === 'ATS' && !c.state.burned) {
+                            if(c.state.atsMode === 1) { bridge('L1', 'Out'); bridge('N', 'N_o'); } 
+                            else if(c.state.atsMode === 2) { bridge('L2', 'Out'); bridge('N', 'N_o'); } 
+                        }
+                        if(c.def.type === 'VFD' && !c.state.burned) {
+                            if((c.state.on || c.state.curFreq > 0.5) && !c.state.tripped) { 
+                                if (c.state.rev) { bridge('L1', 'V'); bridge('L2', 'U'); bridge('L3', 'W'); }
+                                else { bridge('L1', 'U'); bridge('L2', 'V'); bridge('L3', 'W'); }
+                                bridge('13', '14');
+                            }
                             if(c.state.tripped) { bridge('97', '98'); } else { bridge('95', '96'); }
                         }
-                    }
-                    if(c.def.type === 'Cross' || c.def.type === 'Term') { 
-                        const tKeys = Object.keys(c.terminals);
-                        for (let k = 0; k < tKeys.length - 1; k++) { bridge(tKeys[k], tKeys[k + 1]); }
-                    }
-                    if(c.def.type === 'PLC' && !c.state.burned && c.state.on) {
-                        if(c.state.plcQ1) bridge('Q1_1', 'Q1_2');
-                        if(c.state.plcQ2) bridge('Q2_1', 'Q2_2');
-                    }
-                    if(c.def.type === 'HMI' && !c.state.burned && c.state.on) {
-                        if(c.state.hmiF1) bridge('F1_1', 'F1_2');
-                        if(c.state.hmiF2) bridge('F2_1', 'F2_2');
-                    }
-                    if(c.def.type === 'RIP' && !c.state.burned) { if(c.state.mainsOk) bridge('1', '2'); }
-                    if(c.def.type === 'Damper' && !c.state.burned) { if(c.state.on) bridge('S1', 'S3'); else bridge('S1', 'S2'); }
-                    if(c.def.type === 'Signal20' && !c.state.burned) { if(c.state.alarm) bridge('C', 'NO'); else bridge('C', 'NC'); }
-                    if(c.def.type === 'S2000SP1' && !c.state.burned) {
-                        if(c.state.spR1Act) bridge('C1', 'NO1'); else bridge('C1', 'NC1');
-                        if(c.state.spR2Act) bridge('C2', 'NO2'); else bridge('C2', 'NC2');
-                    }
-                });
-
-                // ФАЗА 2: Раздача потенциалов от всех активных источников
-                components.forEach(c => {
-                    if (!c.def.type || c.state.burned) return;
-                    if (c.def.prefix === 'XT' && c.def.title.includes('380V')) {
-                        ds.setPotential(`${c.id}_L1`, 'L1_380'); ds.setPotential(`${c.id}_L2`, 'L2_380'); 
-                        ds.setPotential(`${c.id}_L3`, 'L3_380'); ds.setPotential(`${c.id}_N`, 'N_220');
-                    }
-                    if (c.def.prefix === 'XT' && c.def.title.includes('220V')) {
-                        ds.setPotential(`${c.id}_L`, 'L_220'); ds.setPotential(`${c.id}_N`, 'N_220');
-                    }
-                    if (c.def.prefix === 'XT' && c.def.title.includes('24V')) {
-                        ds.setPotential(`${c.id}_P`, 'P_24'); ds.setPotential(`${c.id}_M`, 'M_24');
-                    }
-                    if (c.def.type === 'UpperLevel') {
-                        ds.setPotential(`${c.id}_M`, 'M_24');
-                        if (c.state.do1) ds.setPotential(`${c.id}_DO1`, 'P_24');
-                        if (c.state.do2) ds.setPotential(`${c.id}_DO2`, 'P_24');
-                        if (c.state.aoVal > 0) ds.setPotential(`${c.id}_AO`, `AI_${c.state.aoVal}`);
-                        ds.setPotential(`${c.id}_AO_I`, `MA_${c.state.maVal}`);
-                    }
-                    if ((c.def.type === 'PowerSupply' || c.def.type === 'RIP') && c.state.on) {
-                        ds.setPotential(`${c.id}_P`, 'P_24'); ds.setPotential(`${c.id}_M`, 'M_24');
-                    }
-                    if (c.def.type === 'VFD' && c.state.vfdPowered && c.terminals['P24']) {
-                        ds.setPotential(`${c.id}_P24`, 'P_24');
-                    }
-                    if (c.def.type === 'HMI' && c.state.on) {
-                        if (c.state.aoVal > 0) ds.setPotential(`${c.id}_AO`, `AI_${c.state.aoVal}`);
-                        if (c.terminals['AO_I']) ds.setPotential(`${c.id}_AO_I`, `MA_${c.state.maVal}`);
-                    }
-                    if (c.def.type === 'BarrierAct' && c.state.on) {
-                        ds.setPotential(`${c.id}_ExP`, 'EX_P');
-                        ds.setPotential(`${c.id}_ExM`, 'EX_M');
-                    }
-                    if (c.def.type === 'Sensor420' && c.state.sensPowered) {
-                        ds.setPotential(`${c.id}_OUT`, `MA_${c.state.maVal}`);
-                    }
-                    if (c.def.type === 'PNP' && c.state.pnpPowered && c.state.on) {
-                        ds.setPotential(`${c.id}_OUT`, 'P_24');
-                    }
-                    if (c.def.type === 'FireSensor' && c.state.on) {
-                        if (ds.getPotential(`${c.id}_13`) === 'NONE' && ds.getPotential(`${c.id}_14`) === 'NONE') {
-                            ds.setPotential(`${c.id}_14`, 'P_24');
-                        }
-                    }
-                    if (c.def.type === 'Signal20' && c.state.on) {
-                        if (c.terminals['SH1_P'] && c.terminals['SH1_P'].connections.length > 0 && ds.getPotential(`${c.id}_SH1_P`) === 'NONE') {
-                            ds.setPotential(`${c.id}_SH1_P`, 'P_24');
-                        }
-                        if (c.terminals['SH2_P'] && c.terminals['SH2_P'].connections.length > 0 && ds.getPotential(`${c.id}_SH2_P`) === 'NONE') {
-                            ds.setPotential(`${c.id}_SH2_P`, 'P_24');
-                        }
-                        if (c.state.alarm) {
-                            ds.setPotential(`${c.id}_OP_P`, 'P_24'); ds.setPotential(`${c.id}_OP_M`, 'M_24');
-                        }
-                    }
-                    if (c.def.type === 'S2000KPB' && c.state.kpbAct) {
-                        ds.setPotential(`${c.id}_KV1`, 'P_24'); ds.setPotential(`${c.id}_KV2`, 'P_24'); ds.setPotential(`${c.id}_M_O`, 'M_24');
-                    }
-                });
-                
-                // ФАЗА 3: Проверка катушек, барьеров [Ex ia], приборов КИПиА и нагрузок
-                components.forEach(c => {
-                    if (!c.def.type) return;
-                    const getV = (t) => ds.getPotential(`${c.id}_${t}`);
-                    
-                    if (['Breaker', 'Breaker3P', 'BreakerShunt', 'RCBO'].includes(c.def.type) || c.def.type.includes('Breaker')) {
-                        if (c.state.on) {
-                            let hasShort = false;
-                            Object.keys(c.terminals).forEach(t => { if (ds.getPotential(`${c.id}_${t}`) === 'SHORT') hasShort = true; });
-                            if (hasShort) {
-                                c.state.on = false; changed = true; SoundFX.shortCircuit(); saveToLocalStorage();
-                                showNotification(`⚡ КЗ в цепи — ${c.name.replace(/\n/g, ' ')} (${c.def.title}) отключен!`, 'burn', 3200);
+                        if(['Contactor', 'ContactorTherm'].includes(c.def.type) && !c.state.burned) {
+                            if(c.state.on) { 
+                                bridge('L1', 'T1'); bridge('L2', 'T2'); bridge('L3', 'T3'); 
+                                bridge('13', '14'); bridge('53', '54'); bridge('83', '84'); bridge('43', '44');
+                            } else { 
+                                bridge('61', '62'); bridge('71', '72'); bridge('21', '22'); bridge('31', '32');
+                            }
+                            if(c.def.type === 'ContactorTherm') {
+                                if(c.state.tripped) { bridge('97', '98'); } else { bridge('95', '96'); }
                             }
                         }
-                    }
+                        if(c.def.type === 'Cross' || c.def.type === 'Term') {
+                            if (c.defId === 'TermFuse' && c.state.tripped) return; // Перегоревший предохранитель FU разрывает цепь!
+                            const tKeys = Object.keys(c.terminals);
+                            for (let k = 0; k < tKeys.length - 1; k++) { bridge(tKeys[k], tKeys[k + 1]); }
+                        }
+                        if(c.def.type === 'PLC' && !c.state.burned && c.state.on) {
+                            if(c.state.plcQ1) bridge('Q1_1', 'Q1_2');
+                            if(c.state.plcQ2) bridge('Q2_1', 'Q2_2');
+                        }
+                        if(c.def.type === 'HMI' && !c.state.burned && c.state.on) {
+                            if(c.state.hmiF1) bridge('F1_1', 'F1_2');
+                            if(c.state.hmiF2) bridge('F2_1', 'F2_2');
+                        }
+                        if(c.def.type === 'RIP' && !c.state.burned) { if(c.state.mainsOk) bridge('1', '2'); }
+                        if(c.def.type === 'Damper' && !c.state.burned) { if(c.state.on) bridge('S1', 'S3'); else bridge('S1', 'S2'); }
+                        if(c.def.type === 'Signal20' && !c.state.burned) { if(c.state.alarm) bridge('C', 'NO'); else bridge('C', 'NC'); }
+                        if(c.def.type === 'S2000SP1' && !c.state.burned) {
+                            if(c.state.spR1Act) bridge('C1', 'NO1'); else bridge('C1', 'NC1');
+                            if(c.state.spR2Act) bridge('C2', 'NO2'); else bridge('C2', 'NC2');
+                        }
+                    });
 
-                    const checkV = (t1, t2, reqV, noBurn = false) => {
-                        let v1 = getV(t1), v2 = getV(t2);
-                        if(v1 === 'SHORT' || v2 === 'SHORT') return false;
-                        if(!noBurn && reqV === '24V' && (v1.includes('220') || v1.includes('380') || v2.includes('220') || v2.includes('380'))) {
-                            if(!c.state.burned && !['Cross', 'Term'].includes(c.def.type)) { burnComponent(c); changed = true; } return false;
+                    // ФАЗА 2: Раздача потенциалов от всех активных источников (с электронной защитой БП 24В от КЗ)
+                    components.forEach(c => {
+                        if (!c.def.type || c.state.burned) return;
+                        if (c.def.prefix === 'XT' && c.def.title.includes('380V')) {
+                            ds.setPotential(`${c.id}_L1`, 'L1_380'); ds.setPotential(`${c.id}_L2`, 'L2_380'); 
+                            ds.setPotential(`${c.id}_L3`, 'L3_380'); ds.setPotential(`${c.id}_N`, 'N_220');
                         }
-                        if(reqV === '220V' && v1.includes('L') && v2.includes('L') && v1 !== v2) {
-                            if(!c.state.burned && !['Cross', 'Term'].includes(c.def.type)) { burnComponent(c); changed = true; } return false;
+                        if (c.def.prefix === 'XT' && c.def.title.includes('220V')) {
+                            ds.setPotential(`${c.id}_L`, 'L_220'); ds.setPotential(`${c.id}_N`, 'N_220');
                         }
-                        if(reqV === '220V') return (v1.includes('L') && v2 === 'N_220') || (v1 === 'N_220' && v2.includes('L'));
-                        if(reqV === '24V') return (v1 === 'P_24' && v2 === 'M_24') || (v1 === 'M_24' && v2 === 'P_24') || (v1 === 'EX_P' && v2 === 'EX_M') || (v1 === 'EX_M' && v2 === 'EX_P') || (v1 === 'P_24' && v2 === 'EX_M') || (v1 === 'EX_P' && v2 === 'M_24');
-                        if(reqV === '380V') return (v1.includes('L') && v2.includes('L') && v1 !== v2);
-                        return false;
-                    };
-
-                    if(c.state.burned) return;
-
-                    if(c.def.type === 'EnergyMeter') {
-                        let hasN = (getV('N_in') === 'N_220' || getV('N_out') === 'N_220');
-                        let hasL = ['L1_in', 'L2_in', 'L3_in'].some(t => getV(t).includes('L'));
-                        let act = hasN && hasL;
-                        if(act !== c.state.on) { c.state.on = act; changed = true; }
-                    }
-                    if(c.def.type === 'PowerSupply') {
-                        let act = checkV('L', 'N', '220V');
-                        if(act !== c.state.on) { c.state.on = act; changed = true; }
-                    }
-                    if(c.def.type === 'RIP') {
-                        let mOk = checkV('L', 'N', '220V'), outOn = mOk || c.state.batOn;
-                        if(mOk !== c.state.mainsOk || outOn !== c.state.on) { c.state.mainsOk = mOk; c.state.on = outOn; changed = true; }
-                    }
-                    if(c.def.type === 'PNP') {
-                        let pwr = checkV('P', 'M', '24V');
-                        if(pwr !== c.state.pnpPowered) { c.state.pnpPowered = pwr; changed = true; }
-                    }
-                    if(c.def.type === 'Sensor420') {
-                        let pwr = checkV('P', 'M', '24V');
-                        if(pwr !== c.state.sensPowered) { c.state.sensPowered = pwr; changed = true; }
-                    }
-                    if(c.def.type === 'Valve420') {
-                        let pwr = checkV('P', 'M', '24V'), aiPot = getV('AI');
-                        let pct = 0;
-                        if (aiPot && aiPot.startsWith('MA_')) {
-                            let ma = parseFloat(aiPot.split('_')[1]) || 4;
-                            pct = Math.max(0, Math.min(100, ((ma - 4) / 16) * 100));
+                        if (c.def.prefix === 'XT' && c.def.title.includes('24V')) {
+                            ds.setPotential(`${c.id}_P`, 'P_24'); ds.setPotential(`${c.id}_M`, 'M_24');
                         }
-                        let act = pwr && aiPot.startsWith('MA_');
-                        if(act !== c.state.on || c.state.valvePct !== pct) {
-                            c.state.on = act; c.state.valvePct = pct; changed = true;
+                        if (c.def.type === 'UpperLevel') {
+                            ds.setPotential(`${c.id}_M`, 'M_24');
+                            if (c.state.do1) ds.setPotential(`${c.id}_DO1`, 'P_24');
+                            if (c.state.do2) ds.setPotential(`${c.id}_DO2`, 'P_24');
+                            if (c.state.aoVal > 0) ds.setPotential(`${c.id}_AO`, `AI_${c.state.aoVal}`);
+                            ds.setPotential(`${c.id}_AO_I`, `MA_${c.state.maVal}`);
                         }
-                    }
-                    if(c.def.type === 'TRM') {
-                        let pwr = checkV('P', 'M', '24V'), aiPot = getV('AI');
-                        let ma = 0;
-                        if (aiPot && aiPot.startsWith('MA_')) ma = parseFloat(aiPot.split('_')[1]) || 0;
-                        let act = pwr;
-                        if(act !== c.state.trmPowered || ma !== c.state.aiMa) {
-                            c.state.trmPowered = act; c.state.aiMa = ma; c.state.on = act; changed = true;
-                        }
-                    }
-                    if(c.def.type === 'BarrierAct') {
-                        let active = checkV('P', 'M', '24V');
-                        let vi = getV('I');
-                        if (vi.includes('220') || vi.includes('380')) { burnComponent(c); changed = true; return; }
-                        let inMa = 0;
-                        if (active && vi.startsWith('MA_')) {
-                            inMa = parseFloat(vi.split('_')[1]) || 0;
-                            ds.setPotential(`${c.id}_O`, vi);
-                        } else if (active && (vi === 'P_24' || vi === 'EX_P')) {
-                            ds.setPotential(`${c.id}_O`, 'P_24');
-                        }
-                        let barTxt = active ? (inMa > 0 ? `${inMa.toFixed(1)}mA` : '24V OK') : 'OFF';
-                        if(active !== c.state.on || c.state.barVal !== barTxt) {
-                            c.state.on = active; c.state.barVal = barTxt; changed = true;
-                        }
-                    }
-                    if(c.def.type === 'BarrierPass') {
-                        let ip = getV('IP'), im = getV('IM');
-                        if (ip.includes('220') || ip.includes('380') || im.includes('220') || im.includes('380')) { burnComponent(c); changed = true; return; }
-                        let barTxt = (ip !== 'NONE' || im !== 'NONE') ? 'Ex ia' : 'PASS';
-                        if(c.state.barVal !== barTxt) { c.state.barVal = barTxt; changed = true; }
-                    }
-                    if(c.def.type === 'Signal20') {
-                        let pwr = checkV('P', 'M', '24V');
-                        let sh1LoopClosed = c.terminals['SH1_P'] && c.terminals['SH1_M'] &&
-                            c.terminals['SH1_P'].connections.length > 0 && c.terminals['SH1_M'].connections.length > 0 &&
-                            ds.find(`${c.id}_SH1_P`) === ds.find(`${c.id}_SH1_M`);
-                        let sh2LoopClosed = c.terminals['SH2_P'] && c.terminals['SH2_M'] &&
-                            c.terminals['SH2_P'].connections.length > 0 && c.terminals['SH2_M'].connections.length > 0 &&
-                            ds.find(`${c.id}_SH2_P`) === ds.find(`${c.id}_SH2_M`);
-
-                        let sh1 = pwr && (sh1LoopClosed || getV('SH1_M') === 'P_24' || (c.terminals['SH1_M'] && c.terminals['SH1_M'].connections.length === 0 && getV('SH1_P') === 'P_24'));
-                        let sh2 = pwr && (sh2LoopClosed || getV('SH2_M') === 'P_24' || (c.terminals['SH2_M'] && c.terminals['SH2_M'].connections.length === 0 && getV('SH2_P') === 'P_24'));
-                        let alrm = pwr && (c.state.fireTest || sh1 || sh2);
-                        if(pwr !== c.state.on || sh1 !== c.state.sh1Alarm || sh2 !== c.state.sh2Alarm || alrm !== c.state.alarm) {
-                            if (alrm && !c.state.alarm) SoundFX.sirenTick(true);
-                            c.state.on = pwr; c.state.sh1Alarm = sh1; c.state.sh2Alarm = sh2; c.state.alarm = alrm; changed = true;
-                        }
-                    }
-                    if(c.def.type === 'S2000SP1') {
-                        let pwr = checkV('P', 'M', '24V');
-                        let r1 = pwr && (c.state.spR1Man || getV('IN1') === 'P_24'), r2 = pwr && (c.state.spR2Man || getV('IN2') === 'P_24');
-                        if(pwr !== c.state.on || r1 !== c.state.spR1Act || r2 !== c.state.spR2Act) {
-                            if (r1 !== c.state.spR1Act || r2 !== c.state.spR2Act) SoundFX.contactor(r1 || r2);
-                            c.state.on = pwr; c.state.spR1Act = r1; c.state.spR2Act = r2; changed = true;
-                        }
-                    }
-                    if(c.def.type === 'S2000KPB') {
-                        let pwr = checkV('P', 'M', '24V');
-                        let act = pwr && (c.state.fireTest || getV('TRIG') === 'P_24');
-                        if(pwr !== c.state.on || act !== c.state.kpbAct) { c.state.on = pwr; c.state.kpbAct = act; changed = true; }
-                    }
-                    if(c.def.type === 'PhaseRelay') {
-                        let p1 = getV('L1'), p2 = getV('L2'), p3 = getV('L3');
-                        let seqOk = (p1 === 'L1_380' && p2 === 'L2_380' && p3 === 'L3_380') || (p1 === 'L2_380' && p2 === 'L3_380' && p3 === 'L1_380') || (p1 === 'L3_380' && p2 === 'L1_380' && p3 === 'L2_380');
-                        if(seqOk !== c.state.on) { c.state.on = seqOk; changed = true; }
-                    }
-                    if(c.def.type === 'SSR') {
-                        let act = checkV('A1', 'A2', '24V');
-                        if(act !== c.state.on) { c.state.on = act; changed = true; }
-                    }
-                    if(c.def.type === 'SoftStarter') {
-                        let p1 = getV('L1'), p2 = getV('L2'), p3 = getV('L3');
-                        let phases = [p1, p2, p3].filter(p => p.includes('380') && p !== 'SHORT');
-                        let has3Ph = (new Set(phases).size === 3);
-                        let cmd = checkV('ST', 'N', '220V') || checkV('ST', 'N', '24V', true) || (getV('ST') === 'P_24' && (!c.terminals['N'] || c.terminals['N'].connections.length === 0));
-                        let act = has3Ph && cmd;
-                        if(act !== c.state.on) { c.state.on = act; changed = true; }
-                    }
-                    if(c.def.type === 'HMI') {
-                        if(checkV('P', 'M', '24V')) {
-                            if(!c.state.on) { c.state.on = true; changed = true; }
-                            let stIn = (getV('ST') === 'P_24');
-                            if(c.state.hmiStat !== stIn) c.state.hmiStat = stIn;
-                            let aiPot = getV('AI_I');
-                            c.state.aiMa = (aiPot && aiPot.startsWith('MA_')) ? (parseFloat(aiPot.split('_')[1]) || 0) : 0;
-                        } else {
-                            if(c.state.on) { c.state.on = false; c.state.hmiStat = false; c.state.aiMa = 0; changed = true; }
-                        }
-                    }
-                    if(c.def.type === 'PanelVoltmeter') {
-                        let p1 = getV('v1'), p2 = getV('v2');
-                        let res = getVoltmeterReading(p1, p2);
-                        if(c.state.meterVal !== res.v || c.state.on !== res.act) {
-                            c.state.meterVal = res.v; c.state.on = res.act;
-                        }
-                    }
-                    if(c.def.type === 'PanelAmmeter') {
-                        let p1 = getV('v1'), p2 = getV('v2');
-                        let mVal = '0.0mA', isAct = false;
-                        if (p1 === 'SHORT' || p2 === 'SHORT') {
-                            mVal = 'ERR'; isAct = true;
-                        } else if (p1.startsWith('MA_')) {
-                            let ma = parseFloat(p1.split('_')[1]) || 0;
-                            if (p2 === 'NONE' && c.terminals['v2'].connections.length > 0) {
-                                ds.setPotential(`${c.id}_v2`, p1);
-                                changed = true;
-                            }
-                            if (p2 === 'M_24' || p2 === 'EX_M' || p2.startsWith('MA_') || c.terminals['v2'].connections.length > 0) {
-                                mVal = `${ma.toFixed(1)}mA`; isAct = true;
-                            }
-                        } else if (p2.startsWith('MA_') && (p1 === 'M_24' || p1 === 'EX_M')) {
-                            let ma = parseFloat(p2.split('_')[1]) || 0;
-                            mVal = `${ma.toFixed(1)}mA`; isAct = true;
-                        }
-                        if(c.state.meterVal !== mVal || c.state.on !== isAct) {
-                            c.state.meterVal = mVal; c.state.on = isAct;
-                        }
-                    }
-                    if(c.def.type === 'ImpulseRelay') {
-                        let coilActive = checkV('A1', 'A2', c.def.v || '220V');
-                        if (coilActive && !c.state.coilPrev) { c.state.on = !c.state.on; SoundFX.contactor(c.state.on); changed = true; }
-                        c.state.coilPrev = coilActive;
-                    }
-                    if(c.def.type === 'PLC') {
-                        if(checkV('P', 'M', '24V')) {
-                            if(!c.state.on) { c.state.on = true; changed = true; }
-                            let vI1 = getV('I1'), vI2 = getV('I2');
-                            if (vI1.includes('220') || vI1.includes('380') || vI2.includes('220') || vI2.includes('380')) { burnComponent(c); changed = true; return; }
-                            let q1 = (vI1 === 'P_24'), q2 = (vI2 === 'P_24');
-                            if(q1 !== c.state.plcQ1) { c.state.plcQ1 = q1; SoundFX.contactor(q1); changed = true; }
-                            if(q2 !== c.state.plcQ2) { c.state.plcQ2 = q2; SoundFX.contactor(q2); changed = true; }
-                        } else {
-                            if(c.state.on) { c.state.on = false; c.state.plcQ1 = false; c.state.plcQ2 = false; changed = true; }
-                        }
-                    }
-                    if(c.def.type === 'BreakerShunt') {
-                        let shuntTrig = checkV('C1', 'C2', '220V') || checkV('C1', 'C2', '24V', true);
-                        if(c.state.on && shuntTrig) { 
-                            c.state.on = false; changed = true; SoundFX.breaker(false); saveToLocalStorage();
-                            showNotification(`Сработал независимый расцепитель ${c.name.replace(/\n/g, ' ')}`, 'burn', 2800);
-                        }
-                    }
-                    if(c.def.type === 'ATS') {
-                        let v1 = getV('L1'), v2 = getV('L2'), vn = getV('N');
-                        let hasIn1 = (v1.includes('L') && vn === 'N_220'), hasIn2 = (v2.includes('L') && vn === 'N_220');
-                        let newMode = hasIn1 ? 1 : (hasIn2 ? 2 : 0), isActive = (newMode > 0);
-                        if(newMode !== c.state.atsMode || isActive !== c.state.on) { 
-                            if (newMode !== c.state.atsMode) SoundFX.contactor(isActive);
-                            c.state.atsMode = newMode; c.state.on = isActive; changed = true; 
-                        }
-                    }
-                    if(['Relay', 'Timer', 'VoltageRelay', 'Contactor', 'ContactorTherm'].includes(c.def.type)) {
-                        let reqV = c.def.v || '220V'; let t1 = 'A1', t2 = 'A2';
-                        if(c.def.type === 'VoltageRelay') { t1 = 'L'; t2 = 'N'; reqV = '220V'; }
-                        
-                        let active = checkV(t1, t2, reqV);
-                        if (c.def.type === 'ContactorTherm' && c.state.tripped) active = false;
-
-                        if (active && c.def.type.startsWith('Contactor')) {
-                            components.forEach(mb => {
-                                if (mb.def.type === 'MechInterlock') {
-                                    let otherId = null;
-                                    if (mb.attachedTo === c.id) otherId = mb.interlockRightId;
-                                    else if (mb.interlockRightId === c.id) otherId = mb.attachedTo;
-                                    if (otherId) {
-                                        let otherCont = components.find(x => x.id === otherId);
-                                        if (otherCont && otherCont.state.on) { active = false; }
-                                    }
+                        if (c.def.type === 'PowerSupply' || c.def.type === 'RIP') {
+                            const hasShort24 = (ds.find(`${c.id}_P`) === ds.find(`${c.id}_M`));
+                            if ((c.state.on || c.state.overload) && hasShort24) {
+                                if (!c.state.overload) {
+                                    c.state.overload = true;
+                                    SoundFX.shortCircuit();
+                                    showNotification(`🛡️ Защита от КЗ 24В: ${c.name.replace(/\n/g, ' ')} отключил выход (КЗ между +24V и 0V)!`, 'burn', 3200);
+                                    changed = true;
                                 }
-                            });
+                            } else {
+                                if (c.state.overload) { c.state.overload = false; changed = true; }
+                                if (c.state.on) {
+                                    ds.setPotential(`${c.id}_P`, 'P_24');
+                                    ds.setPotential(`${c.id}_M`, 'M_24');
+                                }
+                            }
+                        }
+                        if (c.def.type === 'VFD' && c.state.vfdPowered && c.terminals['P24']) {
+                            ds.setPotential(`${c.id}_P24`, 'P_24');
+                        }
+                        if (c.def.type === 'HMI' && c.state.on) {
+                            if (c.state.aoVal > 0) ds.setPotential(`${c.id}_AO`, `AI_${c.state.aoVal}`);
+                            if (c.terminals['AO_I']) ds.setPotential(`${c.id}_AO_I`, `MA_${c.state.maVal}`);
+                        }
+                        if (c.def.type === 'BarrierAct' && c.state.on) {
+                            ds.setPotential(`${c.id}_ExP`, 'EX_P');
+                            ds.setPotential(`${c.id}_ExM`, 'EX_M');
+                        }
+                        if (c.def.type === 'Sensor420' && c.state.sensPowered) {
+                            ds.setPotential(`${c.id}_OUT`, `MA_${c.state.maVal}`);
+                        }
+                        if (c.def.type === 'PNP' && c.state.pnpPowered && c.state.on) {
+                            ds.setPotential(`${c.id}_OUT`, 'P_24');
+                        }
+                        if (c.def.type === 'FireSensor' && c.state.on) {
+                            if (ds.getPotential(`${c.id}_13`) === 'NONE' && ds.getPotential(`${c.id}_14`) === 'NONE') {
+                                ds.setPotential(`${c.id}_14`, 'P_24');
+                            }
+                        }
+                        if (c.def.type === 'Signal20' && c.state.on) {
+                            if (c.terminals['SH1_P'] && c.terminals['SH1_P'].connections.length > 0 && ds.getPotential(`${c.id}_SH1_P`) === 'NONE') {
+                                ds.setPotential(`${c.id}_SH1_P`, 'P_24');
+                            }
+                            if (c.terminals['SH2_P'] && c.terminals['SH2_P'].connections.length > 0 && ds.getPotential(`${c.id}_SH2_P`) === 'NONE') {
+                                ds.setPotential(`${c.id}_SH2_P`, 'P_24');
+                            }
+                            if (c.state.alarm) {
+                                ds.setPotential(`${c.id}_OP_P`, 'P_24'); ds.setPotential(`${c.id}_OP_M`, 'M_24');
+                            }
+                        }
+                        if (c.def.type === 'S2000KPB' && c.state.kpbAct) {
+                            ds.setPotential(`${c.id}_KV1`, 'P_24'); ds.setPotential(`${c.id}_KV2`, 'P_24'); ds.setPotential(`${c.id}_M_O`, 'M_24');
+                        }
+                    });
+
+                    // ФАЗА 2.5: Селективное срабатывание плавких предохранителей FU (TermFuse) при КЗ (раньше вводных автоматов!)
+                    let fuseBlownInThisIter = false;
+                    components.forEach(c => {
+                        if (c.defId === 'TermFuse' && !c.state.tripped) {
+                            if (ds.getPotential(`${c.id}_1`) === 'SHORT' || ds.getPotential(`${c.id}_2`) === 'SHORT') {
+                                c.state.tripped = true;
+                                fuseBlownInThisIter = true;
+                                changed = true;
+                                SoundFX.shortCircuit();
+                                saveToLocalStorage(true);
+                                showNotification(`💥 КЗ в цепи — перегорел предохранитель ${c.name.replace(/\n/g, ' ')}! (нажмите на держатель вставки для замены)`, 'burn', 3800);
+                            }
+                        }
+                    });
+                    if (fuseBlownInThisIter) continue; // Пересчитываем цепь с разомкнутым предохранителем FU!
+
+                    // ФАЗА 3: Проверка катушек, дифзащиты УЗО, барьеров [Ex ia], приборов КИПиА и нагрузок
+                    const active220Loads = []; // Список запитанных 220В потребителей для проверки баланса токов УЗО
+
+                    components.forEach(c => {
+                        if (!c.def.type) return;
+                        const getV = (t) => ds.getPotential(`${c.id}_${t}`);
+                        
+                        if (['Breaker', 'Breaker3P', 'BreakerShunt', 'RCBO'].includes(c.def.type) || c.def.type.includes('Breaker')) {
+                            if (c.state.on) {
+                                let hasShort = false;
+                                Object.keys(c.terminals).forEach(t => { if (ds.getPotential(`${c.id}_${t}`) === 'SHORT') hasShort = true; });
+                                if (hasShort) {
+                                    c.state.on = false; changed = true; SoundFX.shortCircuit(); saveToLocalStorage(true);
+                                    showNotification(`⚡ КЗ в цепи — ${c.name.replace(/\n/g, ' ')} (${c.def.title}) отключен!`, 'burn', 3200);
+                                }
+                            }
                         }
 
-                        if(active !== c.state.on) {
-                            c.state.on = active;
-                            if (['Relay', 'Contactor', 'ContactorTherm'].includes(c.def.type)) SoundFX.contactor(active);
-                            changed = true;
-                        }
-                        if(c.def.type === 'Timer') {
-                            if(active) {
-                                timerStates[c.id] = (timerStates[c.id] || 0) + 1;
-                                if(timerStates[c.id] === 21) { SoundFX.contactor(true); changed = true; }
-                            } else { if(timerStates[c.id] > 0) { timerStates[c.id] = 0; changed = true; } }
-                        }
-                    }
-                    if(c.def.type === 'MechInterlock') {
-                        let leftC = components.find(x => x.id === c.attachedTo), rightC = components.find(x => x.id === c.interlockRightId);
-                        let lockActive = Boolean((leftC && leftC.state.on) || (rightC && rightC.state.on));
-                        if (c.state.on !== lockActive) c.state.on = lockActive;
-                    }
-                    if(c.def.type === 'CabinetLight') {
-                        let active = checkV('x1', 'x2', c.def.v) && (c.state.cabSw !== false);
-                        if(active !== c.state.on) { c.state.on = active; changed = true; }
-                    }
-                    if(['Lamp', 'Siren'].includes(c.def.type)) {
-                        let active = checkV('x1', 'x2', c.def.v);
-                        if(c.def.type === 'Siren') {
-                            if (active) {
-                                let blink = (Math.floor(Date.now() / 250) % 2 === 0);
-                                if (c.state.on !== blink) { c.state.on = blink; SoundFX.sirenTick(blink); }
-                            } else { if (c.state.on !== false) { c.state.on = false; changed = true; } }
-                        } else { if(active !== c.state.on) { c.state.on = active; changed = true; } }
-                    }
-                    if (c.def.type === 'Socket') {
-                        let active = checkV('L', 'N', c.def.v);
-                        if(active !== c.state.on) { c.state.on = active; changed = true; }
-                    }
-                    if (c.def.type === 'VFD') {
-                        let p1 = getV('L1'), p2 = getV('L2'), p3 = getV('L3');
-                        let phases = [p1, p2, p3].filter(p => p.includes('380') && p !== 'SHORT');
-                        let has3Ph = (new Set(phases).size === 3);
-                        if (c.state.vfdPowered !== has3Ph) { c.state.vfdPowered = has3Ph; changed = true; }
+                        const checkV = (t1, t2, reqV, noBurn = false) => {
+                            let v1 = getV(t1), v2 = getV(t2);
+                            if(v1 === 'SHORT' || v2 === 'SHORT') return false;
+                            if(!noBurn && reqV === '24V' && (v1.includes('220') || v1.includes('380') || v2.includes('220') || v2.includes('380'))) {
+                                if(!c.state.burned && !['Cross', 'Term'].includes(c.def.type)) { burnComponent(c); changed = true; } return false;
+                            }
+                            if(reqV === '220V' && v1.includes('L') && v2.includes('L') && v1 !== v2) {
+                                if(!c.state.burned && !['Cross', 'Term'].includes(c.def.type)) { burnComponent(c); changed = true; } return false;
+                            }
+                            if(reqV === '220V') {
+                                const ok = (v1.includes('L') && v2 === 'N_220') || (v1 === 'N_220' && v2.includes('L'));
+                                if (ok) {
+                                    const tL = v1.includes('L') ? `${c.id}_${t1}` : `${c.id}_${t2}`;
+                                    const tN = v1 === 'N_220' ? `${c.id}_${t1}` : `${c.id}_${t2}`;
+                                    active220Loads.push({ comp: c, tL, tN });
+                                }
+                                return ok;
+                            }
+                            if(reqV === '24V') return (v1 === 'P_24' && v2 === 'M_24') || (v1 === 'M_24' && v2 === 'P_24') || (v1 === 'EX_P' && v2 === 'EX_M') || (v1 === 'EX_M' && v2 === 'EX_P') || (v1 === 'P_24' && v2 === 'EX_M') || (v1 === 'EX_P' && v2 === 'M_24');
+                            if(reqV === '380V') return (v1.includes('L') && v2.includes('L') && v1 !== v2);
+                            return false;
+                        };
 
-                        let aiPot = getV('AI');
-                        if (c.state.vfdAiMode === 'I') {
+                        if(c.state.burned) return;
+
+                        if(c.def.type === 'EnergyMeter') {
+                            let hasN = (getV('N_in') === 'N_220' || getV('N_out') === 'N_220');
+                            let hasL = ['L1_in', 'L2_in', 'L3_in'].some(t => getV(t).includes('L'));
+                            let act = hasN && hasL;
+                            if(act !== c.state.on) { c.state.on = act; changed = true; }
+                        }
+                        if(c.def.type === 'PowerSupply') {
+                            let act = checkV('L', 'N', '220V') && !c.state.overload;
+                            if(act !== c.state.on) { c.state.on = act; changed = true; }
+                        }
+                        if(c.def.type === 'RIP') {
+                            let mOk = checkV('L', 'N', '220V'), outOn = (mOk || c.state.batOn) && !c.state.overload;
+                            if(mOk !== c.state.mainsOk || outOn !== c.state.on) { c.state.mainsOk = mOk; c.state.on = outOn; changed = true; }
+                        }
+                        if(c.def.type === 'PNP') {
+                            let pwr = checkV('P', 'M', '24V');
+                            if(pwr !== c.state.pnpPowered) { c.state.pnpPowered = pwr; changed = true; }
+                        }
+                        if(c.def.type === 'Sensor420') {
+                            let pwr = checkV('P', 'M', '24V');
+                            if(pwr !== c.state.sensPowered) { c.state.sensPowered = pwr; changed = true; }
+                        }
+                        if(c.def.type === 'Valve420') {
+                            let pwr = checkV('P', 'M', '24V'), aiPot = getV('AI');
+                            let pct = 0;
                             if (aiPot && aiPot.startsWith('MA_')) {
                                 let ma = parseFloat(aiPot.split('_')[1]) || 4;
-                                c.state.freqSet = Math.round(Math.max(0, Math.min(60, ((ma - 4) / 16) * 60)));
+                                pct = Math.max(0, Math.min(100, ((ma - 4) / 16) * 100));
                             }
-                        } else {
-                            if (aiPot && aiPot.startsWith('AI_')) {
-                                let vVal = parseFloat(aiPot.split('_')[1]) || 0;
-                                c.state.freqSet = Math.round(vVal * 6);
+                            let act = pwr && aiPot.startsWith('MA_');
+                            if(act !== c.state.on || c.state.valvePct !== pct) {
+                                c.state.on = act; c.state.valvePct = pct; changed = true;
                             }
                         }
+                        if(c.def.type === 'TRM') {
+                            let pwr = checkV('P', 'M', '24V'), aiPot = getV('AI');
+                            let ma = 0;
+                            if (aiPot && aiPot.startsWith('MA_')) ma = parseFloat(aiPot.split('_')[1]) || 0;
+                            let act = pwr;
+                            if(act !== c.state.trmPowered || ma !== c.state.aiMa) {
+                                c.state.trmPowered = act; c.state.aiMa = ma; c.state.on = act; changed = true;
+                            }
+                        }
+                        if(c.def.type === 'BarrierAct') {
+                            let active = checkV('P', 'M', '24V');
+                            let vi = getV('I');
+                            if (vi.includes('220') || vi.includes('380')) { burnComponent(c); changed = true; return; }
+                            let inMa = 0;
+                            if (active && vi.startsWith('MA_')) {
+                                inMa = parseFloat(vi.split('_')[1]) || 0;
+                                ds.setPotential(`${c.id}_O`, vi);
+                            } else if (active && (vi === 'P_24' || vi === 'EX_P')) {
+                                ds.setPotential(`${c.id}_O`, 'P_24');
+                            }
+                            let barTxt = active ? (inMa > 0 ? `${inMa.toFixed(1)}mA` : '24V OK') : 'OFF';
+                            if(active !== c.state.on || c.state.barVal !== barTxt) {
+                                c.state.on = active; c.state.barVal = barTxt; changed = true;
+                            }
+                        }
+                        if(c.def.type === 'BarrierPass') {
+                            let ip = getV('IP'), im = getV('IM');
+                            if (ip.includes('220') || ip.includes('380') || im.includes('220') || im.includes('380')) { burnComponent(c); changed = true; return; }
+                            let barTxt = (ip !== 'NONE' || im !== 'NONE') ? 'Ex ia' : 'PASS';
+                            if(c.state.barVal !== barTxt) { c.state.barVal = barTxt; changed = true; }
+                        }
+                        if(c.def.type === 'Signal20') {
+                            let pwr = checkV('P', 'M', '24V');
+                            let sh1LoopClosed = c.terminals['SH1_P'] && c.terminals['SH1_M'] &&
+                                c.terminals['SH1_P'].connections.length > 0 && c.terminals['SH1_M'].connections.length > 0 &&
+                                ds.find(`${c.id}_SH1_P`) === ds.find(`${c.id}_SH1_M`);
+                            let sh2LoopClosed = c.terminals['SH2_P'] && c.terminals['SH2_M'] &&
+                                c.terminals['SH2_P'].connections.length > 0 && c.terminals['SH2_M'].connections.length > 0 &&
+                                ds.find(`${c.id}_SH2_P`) === ds.find(`${c.id}_SH2_M`);
 
-                        let di1Used = c.terminals['DI1'] && c.terminals['DI1'].connections.length > 0;
-                        let di2Used = c.terminals['DI2'] && c.terminals['DI2'].connections.length > 0;
-                        let fwdCmd = di1Used ? (getV('DI1') === 'P_24') : (!di2Used);
-                        let revCmd = (di2Used && getV('DI2') === 'P_24') || c.state.localRev;
-                        
-                        let active = has3Ph && (fwdCmd || (di2Used && getV('DI2') === 'P_24')) && !c.state.tripped;
-                        if(active !== c.state.on || revCmd !== c.state.rev) { 
-                            c.state.on = active; c.state.rev = revCmd; changed = true; 
+                            let sh1 = pwr && (sh1LoopClosed || getV('SH1_M') === 'P_24' || (c.terminals['SH1_M'] && c.terminals['SH1_M'].connections.length === 0 && getV('SH1_P') === 'P_24'));
+                            let sh2 = pwr && (sh2LoopClosed || getV('SH2_M') === 'P_24' || (c.terminals['SH2_M'] && c.terminals['SH2_M'].connections.length === 0 && getV('SH2_P') === 'P_24'));
+                            let alrm = pwr && (c.state.fireTest || sh1 || sh2);
+                            if(pwr !== c.state.on || sh1 !== c.state.sh1Alarm || sh2 !== c.state.sh2Alarm || alrm !== c.state.alarm) {
+                                if (alrm && !c.state.alarm) SoundFX.sirenTick(true);
+                                c.state.on = pwr; c.state.sh1Alarm = sh1; c.state.sh2Alarm = sh2; c.state.alarm = alrm; changed = true;
+                            }
                         }
-                    }
-                    if(c.def.type === 'Motor' || c.def.type === 'Damper') {
-                        let active = checkV('u1', 'n', c.def.v);
-                        if(active !== c.state.on) { c.state.on = active; if (c.defId === 'Solenoid24') SoundFX.contactor(active); changed = true; }
-                    }
-                    if(c.def.type === 'Motor3P') {
-                        let pU = getV('u1'), pV = getV('v1'), pW = getV('w1');
-                        let phases = [pU, pV, pW].filter(p => p.includes('380') && p !== 'SHORT');
-                        let active = (new Set(phases).size === 3);
-                        if(active !== c.state.on) { c.state.on = active; changed = true; }
-                        if(active) {
-                            let isRev = (pU === 'L2_380' && pV === 'L1_380') || (pU === 'L3_380' && pV === 'L2_380') || (pU === 'L1_380' && pV === 'L3_380');
-                            if(c.state.rev !== isRev) { c.state.rev = isRev; changed = true; }
-                            let vfdComp = components.find(v => v.def.type === 'VFD' && (v.state.on || v.state.curFreq > 0.5));
-                            c.state.motorFreq = vfdComp ? Math.max(2, vfdComp.state.curFreq) : 50;
+                        if(c.def.type === 'S2000SP1') {
+                            let pwr = checkV('P', 'M', '24V');
+                            let r1 = pwr && (c.state.spR1Man || getV('IN1') === 'P_24'), r2 = pwr && (c.state.spR2Man || getV('IN2') === 'P_24');
+                            if(pwr !== c.state.on || r1 !== c.state.spR1Act || r2 !== c.state.spR2Act) {
+                                if (r1 !== c.state.spR1Act || r2 !== c.state.spR2Act) SoundFX.contactor(r1 || r2);
+                                c.state.on = pwr; c.state.spR1Act = r1; c.state.spR2Act = r2; changed = true;
+                            }
                         }
-                    }
-                });
-                
-                let newPot = {};
-                components.forEach(c => { Object.keys(c.terminals).forEach(t => {
-                    let p = ds.getPotential(`${c.id}_${t}`);
-                    if(p === 'SHORT') curShort = true;
-                    newPot[`${c.id}_${t}`] = p;
-                })});
-                engineState.potentials = newPot;
-                engineState.shorts = curShort;
-                engineState.continuityDS = lastDS;
+                        if(c.def.type === 'S2000KPB') {
+                            let pwr = checkV('P', 'M', '24V');
+                            let act = pwr && (c.state.fireTest || getV('TRIG') === 'P_24');
+                            if(pwr !== c.state.on || act !== c.state.kpbAct) { c.state.on = pwr; c.state.kpbAct = act; changed = true; }
+                        }
+                        if(c.def.type === 'PhaseRelay') {
+                            let p1 = getV('L1'), p2 = getV('L2'), p3 = getV('L3');
+                            let seqOk = (p1 === 'L1_380' && p2 === 'L2_380' && p3 === 'L3_380') || (p1 === 'L2_380' && p2 === 'L3_380' && p3 === 'L1_380') || (p1 === 'L3_380' && p2 === 'L1_380' && p3 === 'L2_380');
+                            if(seqOk !== c.state.on) { c.state.on = seqOk; changed = true; }
+                        }
+                        if(c.def.type === 'SSR') {
+                            let act = checkV('A1', 'A2', '24V');
+                            if(act !== c.state.on) { c.state.on = act; changed = true; }
+                        }
+                        if(c.def.type === 'SoftStarter') {
+                            let p1 = getV('L1'), p2 = getV('L2'), p3 = getV('L3');
+                            let phases = [p1, p2, p3].filter(p => p.includes('380') && p !== 'SHORT');
+                            let has3Ph = (new Set(phases).size === 3);
+                            let cmd = checkV('ST', 'N', '220V') || checkV('ST', 'N', '24V', true) || (getV('ST') === 'P_24' && (!c.terminals['N'] || c.terminals['N'].connections.length === 0));
+                            let act = has3Ph && cmd;
+                            if(act !== c.state.on) { c.state.on = act; changed = true; }
+                        }
+                        if(c.def.type === 'HMI') {
+                            if(checkV('P', 'M', '24V')) {
+                                if(!c.state.on) { c.state.on = true; changed = true; }
+                                let stIn = (getV('ST') === 'P_24');
+                                if(c.state.hmiStat !== stIn) c.state.hmiStat = stIn;
+                                let aiPot = getV('AI_I');
+                                c.state.aiMa = (aiPot && aiPot.startsWith('MA_')) ? (parseFloat(aiPot.split('_')[1]) || 0) : 0;
+                            } else {
+                                if(c.state.on) { c.state.on = false; c.state.hmiStat = false; c.state.aiMa = 0; changed = true; }
+                            }
+                        }
+                        if(c.def.type === 'PanelVoltmeter') {
+                            let p1 = getV('v1'), p2 = getV('v2');
+                            let res = getVoltmeterReading(p1, p2);
+                            if(c.state.meterVal !== res.v || c.state.on !== res.act) {
+                                c.state.meterVal = res.v; c.state.on = res.act;
+                            }
+                        }
+                        if(c.def.type === 'PanelAmmeter') {
+                            let p1 = getV('v1'), p2 = getV('v2');
+                            let mVal = '0.0mA', isAct = false;
+                            if (p1 === 'SHORT' || p2 === 'SHORT') {
+                                mVal = 'ERR'; isAct = true;
+                            } else if (p1.startsWith('MA_')) {
+                                let ma = parseFloat(p1.split('_')[1]) || 0;
+                                if (p2 === 'NONE' && c.terminals['v2'].connections.length > 0) {
+                                    ds.setPotential(`${c.id}_v2`, p1);
+                                    changed = true;
+                                }
+                                if (p2 === 'M_24' || p2 === 'EX_M' || p2.startsWith('MA_') || c.terminals['v2'].connections.length > 0) {
+                                    mVal = `${ma.toFixed(1)}mA`; isAct = true;
+                                }
+                            } else if (p2.startsWith('MA_') && (p1 === 'M_24' || p1 === 'EX_M')) {
+                                let ma = parseFloat(p2.split('_')[1]) || 0;
+                                mVal = `${ma.toFixed(1)}mA`; isAct = true;
+                            }
+                            if(c.state.meterVal !== mVal || c.state.on !== isAct) {
+                                c.state.meterVal = mVal; c.state.on = isAct;
+                            }
+                        }
+                        if(c.def.type === 'ImpulseRelay') {
+                            let coilActive = checkV('A1', 'A2', c.def.v || '220V');
+                            if (coilActive && !c.state.coilPrev) { c.state.on = !c.state.on; SoundFX.contactor(c.state.on); changed = true; }
+                            c.state.coilPrev = coilActive;
+                        }
+                        if(c.def.type === 'PLC') {
+                            if(checkV('P', 'M', '24V')) {
+                                if(!c.state.on) { c.state.on = true; changed = true; }
+                                let vI1 = getV('I1'), vI2 = getV('I2');
+                                if (vI1.includes('220') || vI1.includes('380') || vI2.includes('220') || vI2.includes('380')) { burnComponent(c); changed = true; return; }
+                                let q1 = (vI1 === 'P_24'), q2 = (vI2 === 'P_24');
+                                if(q1 !== c.state.plcQ1) { c.state.plcQ1 = q1; SoundFX.contactor(q1); changed = true; }
+                                if(q2 !== c.state.plcQ2) { c.state.plcQ2 = q2; SoundFX.contactor(q2); changed = true; }
+                            } else {
+                                if(c.state.on) { c.state.on = false; c.state.plcQ1 = false; c.state.plcQ2 = false; changed = true; }
+                            }
+                        }
+                        if(c.def.type === 'BreakerShunt') {
+                            let shuntTrig = checkV('C1', 'C2', '220V') || checkV('C1', 'C2', '24V', true);
+                            if(c.state.on && shuntTrig) { 
+                                c.state.on = false; changed = true; SoundFX.breaker(false); saveToLocalStorage(true);
+                                showNotification(`Сработал независимый расцепитель ${c.name.replace(/\n/g, ' ')}`, 'burn', 2800);
+                            }
+                        }
+                        if(c.def.type === 'ATS') {
+                            let v1 = getV('L1'), v2 = getV('L2'), vn = getV('N');
+                            let hasIn1 = (v1.includes('L') && vn === 'N_220'), hasIn2 = (v2.includes('L') && vn === 'N_220');
+                            let newMode = hasIn1 ? 1 : (hasIn2 ? 2 : 0), isActive = (newMode > 0);
+                            if(newMode !== c.state.atsMode || isActive !== c.state.on) { 
+                                if (newMode !== c.state.atsMode) SoundFX.contactor(isActive);
+                                c.state.atsMode = newMode; c.state.on = isActive; changed = true; 
+                            }
+                        }
+                        if(['Relay', 'Timer', 'VoltageRelay', 'Contactor', 'ContactorTherm'].includes(c.def.type)) {
+                            let reqV = c.def.v || '220V'; let t1 = 'A1', t2 = 'A2';
+                            if(c.def.type === 'VoltageRelay') { t1 = 'L'; t2 = 'N'; reqV = '220V'; }
+                            
+                            let active = checkV(t1, t2, reqV);
+                            if (c.def.type === 'ContactorTherm' && c.state.tripped) active = false;
+
+                            if (active && c.def.type.startsWith('Contactor')) {
+                                components.forEach(mb => {
+                                    if (mb.def.type === 'MechInterlock') {
+                                        let otherId = null;
+                                        if (mb.attachedTo === c.id) otherId = mb.interlockRightId;
+                                        else if (mb.interlockRightId === c.id) otherId = mb.attachedTo;
+                                        if (otherId) {
+                                            let otherCont = components.find(x => x.id === otherId);
+                                            if (otherCont && otherCont.state.on) { active = false; }
+                                        }
+                                    }
+                                });
+                            }
+
+                            if(active !== c.state.on) {
+                                c.state.on = active;
+                                if (['Relay', 'Contactor', 'ContactorTherm'].includes(c.def.type)) SoundFX.contactor(active);
+                                changed = true;
+                            }
+                            if(c.def.type === 'Timer') {
+                                if(active) {
+                                    timerStates[c.id] = (timerStates[c.id] || 0) + 1;
+                                    if(timerStates[c.id] === 21) { SoundFX.contactor(true); changed = true; }
+                                } else { if(timerStates[c.id] > 0) { timerStates[c.id] = 0; changed = true; } }
+                            }
+                        }
+                        if(c.def.type === 'MechInterlock') {
+                            let leftC = components.find(x => x.id === c.attachedTo), rightC = components.find(x => x.id === c.interlockRightId);
+                            let lockActive = Boolean((leftC && leftC.state.on) || (rightC && rightC.state.on));
+                            if (c.state.on !== lockActive) c.state.on = lockActive;
+                        }
+                        if(c.def.type === 'CabinetLight') {
+                            let active = (c.state.cabSw !== false) && checkV('x1', 'x2', c.def.v);
+                            if(active !== c.state.on) { c.state.on = active; changed = true; }
+                        }
+                        if(['Lamp', 'Siren'].includes(c.def.type)) {
+                            let active = checkV('x1', 'x2', c.def.v);
+                            if(c.def.type === 'Siren') {
+                                if (active) {
+                                    let blink = (Math.floor(Date.now() / 250) % 2 === 0);
+                                    if (c.state.on !== blink) { c.state.on = blink; SoundFX.sirenTick(blink); }
+                                } else { if (c.state.on !== false) { c.state.on = false; changed = true; } }
+                            } else { if(active !== c.state.on) { c.state.on = active; changed = true; } }
+                        }
+                        if (c.def.type === 'Socket') {
+                            let active = checkV('L', 'N', c.def.v);
+                            if(active !== c.state.on) { c.state.on = active; changed = true; }
+                        }
+                        if (c.def.type === 'VFD') {
+                            let p1 = getV('L1'), p2 = getV('L2'), p3 = getV('L3');
+                            let phases = [p1, p2, p3].filter(p => p.includes('380') && p !== 'SHORT');
+                            let has3Ph = (new Set(phases).size === 3);
+                            if (c.state.vfdPowered !== has3Ph) { c.state.vfdPowered = has3Ph; changed = true; }
+
+                            let aiPot = getV('AI');
+                            if (c.state.vfdAiMode === 'I') {
+                                if (aiPot && aiPot.startsWith('MA_')) {
+                                    let ma = parseFloat(aiPot.split('_')[1]) || 4;
+                                    c.state.freqSet = Math.round(Math.max(0, Math.min(60, ((ma - 4) / 16) * 60)));
+                                }
+                            } else {
+                                if (aiPot && aiPot.startsWith('AI_')) {
+                                    let vVal = parseFloat(aiPot.split('_')[1]) || 0;
+                                    c.state.freqSet = Math.round(vVal * 6);
+                                }
+                            }
+
+                            let di1Used = c.terminals['DI1'] && c.terminals['DI1'].connections.length > 0;
+                            let di2Used = c.terminals['DI2'] && c.terminals['DI2'].connections.length > 0;
+                            let fwdCmd = di1Used ? (getV('DI1') === 'P_24') : (!di2Used);
+                            let revCmd = (di2Used && getV('DI2') === 'P_24') || c.state.localRev;
+                            
+                            let active = has3Ph && (fwdCmd || (di2Used && getV('DI2') === 'P_24')) && !c.state.tripped;
+                            if(active !== c.state.on || revCmd !== c.state.rev) { 
+                                c.state.on = active; c.state.rev = revCmd; changed = true; 
+                            }
+                        }
+                        if(c.def.type === 'Motor' || c.def.type === 'Damper') {
+                            let active = checkV('u1', 'n', c.def.v);
+                            if(active !== c.state.on) { c.state.on = active; if (c.defId === 'Solenoid24') SoundFX.contactor(active); changed = true; }
+                        }
+                        if(c.def.type === 'Motor3P') {
+                            let pU = getV('u1'), pV = getV('v1'), pW = getV('w1');
+                            let phases = [pU, pV, pW].filter(p => p.includes('380') && p !== 'SHORT');
+                            let uniquePhases = new Set(phases).size;
+
+                            if (uniquePhases === 3) {
+                                if (!c.state.on || c.state.singlePhasing) {
+                                    c.state.on = true;
+                                    c.state.singlePhasing = false;
+                                    c.state.phaseLossTicks = 0;
+                                    changed = true;
+                                }
+                                let isRev = (pU === 'L2_380' && pV === 'L1_380') || (pU === 'L3_380' && pV === 'L2_380') || (pU === 'L1_380' && pV === 'L3_380');
+                                if(c.state.rev !== isRev) { c.state.rev = isRev; changed = true; }
+                                let vfdComp = components.find(v => v.def.type === 'VFD' && (v.state.on || v.state.curFreq > 0.5));
+                                c.state.motorFreq = vfdComp ? Math.max(2, vfdComp.state.curFreq) : 50;
+                            } else if (uniquePhases === 2) {
+                                // Обрыв одной фазы (неполнофазный режим: двигатель гудит на 2 фазах)
+                                if (c.state.on || !c.state.singlePhasing) {
+                                    c.state.on = false;
+                                    c.state.singlePhasing = true;
+                                    changed = true;
+                                    showNotification(`⚠️ Обрыв фазы (2 фазы из 3): двигатель ${c.name.replace(/\n/g, ' ')} гудит под сверхтоком!`, 'burn', 3000);
+                                }
+                            } else {
+                                if (c.state.on || c.state.singlePhasing) {
+                                    c.state.on = false;
+                                    c.state.singlePhasing = false;
+                                    c.state.phaseLossTicks = 0;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    });
+
+                    // ФАЗА 3.5: Проверка дифференциальной защиты УЗО / АВДТ (RCBO1PN, RCBO3PN) на утечку и «чужой ноль»
+                    components.forEach(rcbo => {
+                        if (rcbo.def.type !== 'RCBO' || !rcbo.state.on || rcbo.state.burned) return;
+                        const pZone = new Set();
+                        ['2', '4', '6'].forEach(tid => {
+                            if (rcbo.terminals[tid]) pZone.add(rcboDS.find(`${rcbo.id}_${tid}`));
+                        });
+                        const nOutRoot = rcboDS.find(`${rcbo.id}_N_out`);
+                        const nInRoot  = rcboDS.find(`${rcbo.id}_N_in`);
+                        const nBypassed = (nOutRoot === nInRoot) && (rcbo.terminals['N_out'].connections.length > 0);
+
+                        let leakageDetected = false;
+                        active220Loads.forEach(load => {
+                            const lRoot = rcboDS.find(load.tL);
+                            const nRoot = rcboDS.find(load.tN);
+                            const phaseViaRcbo = pZone.has(lRoot);
+                            const neutralViaRcbo = (nRoot === nOutRoot);
+                            if (phaseViaRcbo !== neutralViaRcbo || (phaseViaRcbo && neutralViaRcbo && nBypassed)) {
+                                leakageDetected = true;
+                            }
+                        });
+
+                        if (leakageDetected) {
+                            rcbo.state.on = false;
+                            changed = true;
+                            SoundFX.breaker(false);
+                            saveToLocalStorage(true);
+                            showNotification(`⚡ Сработала диф. защита УЗО ${rcbo.name.replace(/\n/g, ' ')} (небаланс токов / чужой ноль N)!`, 'burn', 3800);
+                        }
+                    });
+                    
+                    let newPot = {};
+                    components.forEach(c => { Object.keys(c.terminals).forEach(t => {
+                        let p = ds.getPotential(`${c.id}_${t}`);
+                        if(p === 'SHORT') curShort = true;
+                        newPot[`${c.id}_${t}`] = p;
+                    })});
+                    engineState.potentials = newPot;
+                    engineState.shorts = curShort;
+                    engineState.continuityDS = lastDS;
+                }
             }
 
+            // Потактовая обработка динамики (разгон ПЧ, счетчик кВт*ч, тепловая защита при обрыве фазы 3Ф двигателя)
             let runningMotors = 0, freqSum = 0;
             components.forEach(c => {
                 if (c.def.type === 'VFD') {
@@ -3622,7 +4140,31 @@
                     } else { c.state.curFreq = target; }
                 }
                 if (c.def.type === 'EnergyMeter' && c.state.on) { c.state.kwh += 0.005; }
-                if ((c.def.type === 'Motor3P' || (c.def.type === 'Motor' && c.def.ui === 'motor')) && c.state.on) {
+                if (c.def.type === 'Motor3P' && c.state.singlePhasing) {
+                    runningMotors++; freqSum += 25; // Гул заторможенного двигателя на 2 фазах
+                    c.state.phaseLossTicks = (c.state.phaseLossTicks || 0) + 1;
+                    if (c.state.phaseLossTicks >= 60) {
+                        c.state.phaseLossTicks = 0;
+                        c.state.singlePhasing = false;
+                        // Ищем питающий пускатель с тепловым реле РТТ
+                        const ds = engineState.continuityDS;
+                        const feedingRtt = components.find(km =>
+                            km.def.type === 'ContactorTherm' && km.state.on && !km.state.tripped &&
+                            ds && ['T1', 'T2', 'T3'].some(kt => ['u1', 'v1', 'w1'].some(mt => ds.find(`${km.id}_${kt}`) === ds.find(`${c.id}_${mt}`)))
+                        );
+                        if (feedingRtt) {
+                            feedingRtt.state.tripped = true;
+                            feedingRtt.state.on = false;
+                            markCircuitDirty();
+                            SoundFX.breaker(false);
+                            saveToLocalStorage(true);
+                            showNotification(`🛡️ Сработало тепловое реле РТТ (${feedingRtt.name.replace(/\n/g, ' ')}) из-за обрыва фазы двигателя ${c.name.replace(/\n/g, ' ')}!`, 'burn', 4000);
+                        } else {
+                            burnComponent(c);
+                            showNotification(`🔥 Двигатель ${c.name.replace(/\n/g, ' ')} сгорел от работы на 2 фазах (нет защиты РТТ)!`, 'burn', 4000);
+                        }
+                    }
+                } else if ((c.def.type === 'Motor3P' || (c.def.type === 'Motor' && c.def.ui === 'motor')) && c.state.on) {
                     runningMotors++; freqSum += (c.state.motorFreq || 50);
                 }
             });
@@ -3633,15 +4175,20 @@
             updateVisuals();
         }
 
-        function updateVisuals() {
+        function updateVisuals(force = false) {
             wires.forEach(w => {
                 if(!w.dom) return;
-                w.dom.className.baseVal = computeWireClass(w);
+                const cls = computeWireClass(w);
+                if (force || w._lastCls !== cls) {
+                    w.dom.className.baseVal = cls;
+                    w._lastCls = cls;
+                }
             });
-            components.forEach(c => c.updateVisuals());
+            components.forEach(c => c.updateVisuals(force));
         }
 // === КОНЕЦ ЧАСТИ 4 ИЗ 4 (ДАЛЕЕ ИДЕТ ВАШ БЛОК ГЕНЕРАТОРА PDF ПО ГОСТ) ===
-        // =========================================================================
+
+// =========================================================================
         // ГЕНЕРАТОР ИНЖЕНЕРНЫХ ЧЕРТЕЖЕЙ PDF ПО ГОСТ 2.702-2011 / ГОСТ 2.755-87
         // =========================================================================
 
