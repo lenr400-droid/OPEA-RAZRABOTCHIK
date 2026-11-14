@@ -5689,7 +5689,90 @@
                 const steps = Math.round(((rot || 0) % 360) / 90);
                 return order[(idx + steps + 4) % 4];
             }
-                        // Обновленный рендер Блок-бокса: сохранение масштаба 1:1 при повороте 90/270° и вынос штуцеров за плашки текста
+                      // Обновленный рендер Блок-бокса: сохранение масштаба 1:1 при повороте 90/270° и вынос штуцеров за плашки текста
+            (function injectScaleAndXtFixes() {
+                const st = document.createElement('style');
+                st.id = 'zoom-and-xt-fixes';
+                st.textContent = `
+                    :root {
+                        --board-scale: 1;
+                    }
+                    body, .component, .box-tile-comp, svg text {
+                        -webkit-text-size-adjust: none !important;
+                        text-size-adjust: none !important;
+                        text-rendering: geometricPrecision !important;
+                    }
+                    /* Рендерим внутренности всех приборов в 2.5x разрешении (шрифты >10px не блокируются браузером) и масштабируем матрицей */
+                    .component {
+                        --comp-scale: 2.5 !important;
+                        transform-origin: 0 0 !important;
+                        transform: scale(calc(var(--board-scale) * 0.4)) translateY(-50%) !important;
+                    }
+                    .component.box-tile-comp {
+                        --comp-scale: 2.5 !important;
+                        transform-origin: 0 0 !important;
+                        transform: scale(calc(var(--board-scale) * 0.4)) !important;
+                    }
+                    @keyframes pulse {
+                        0%, 100% { filter: brightness(1); }
+                        50% { filter: brightness(1.18); }
+                    }
+                    /* Вертикальные кабельные бирки (кембрики) под клеммами XT — не накладываются и не вылезают за пределы ряда */
+                    .xt-ext-tag {
+                        position: absolute !important;
+                        top: calc(100% + 22px * var(--comp-scale)) !important;
+                        bottom: auto !important;
+                        left: 50% !important;
+                        transform: translate(-50%, -50%) rotate(-90deg) !important;
+                        width: calc(30px * var(--comp-scale)) !important;
+                        max-width: calc(30px * var(--comp-scale)) !important;
+                        height: calc(10.5px * var(--comp-scale)) !important;
+                        line-height: calc(9.2px * var(--comp-scale)) !important;
+                        padding: 0 calc(2px * var(--comp-scale)) !important;
+                        font-size: calc(4.4px * var(--comp-scale)) !important;
+                        font-family: monospace !important;
+                        font-weight: 900 !important;
+                        text-align: center !important;
+                        white-space: nowrap !important;
+                        overflow: hidden !important;
+                        text-overflow: ellipsis !important;
+                        box-sizing: border-box !important;
+                        border-radius: calc(2px * var(--comp-scale)) !important;
+                        border: calc(0.8px * var(--comp-scale)) solid #c084fc !important;
+                        background: #581c87 !important;
+                        color: #f3e8ff !important;
+                        z-index: 36 !important;
+                    }
+                `;
+                document.head.appendChild(st);
+            })();
+
+            // Компактный шифр для вертикальной бирки под клеммой XT (например: "M1 НАСОС Н-1" + "u1" -> "M1:u1")
+            function formatXtShortTag(extDev, termId) {
+                const raw = (extDev?.name || '').replace(/\n/g, ' ').trim();
+                if (!raw) return termId;
+                const parts = raw.split(/\s+/);
+                let shortDev = parts[0];
+                if (parts.length > 1 && !/\d/.test(shortDev) && /^\d+$/.test(parts[1])) {
+                    shortDev = shortDev.slice(0, 3) + parts[1];
+                } else if (shortDev.length > 5) {
+                    shortDev = shortDev.slice(0, 5);
+                }
+                return `${shortDev}:${termId}`;
+            }
+
+            window.calcLabelFontSize = function(text, comp) {
+                const raw = (text || '').trim();
+                const lines = raw.split('\n');
+                const maxLine = Math.max(1, ...lines.map(l => l.length));
+                if (comp.def.type === 'Term' || comp.def.type === 'TermPE') return maxLine > 5 ? 5.0 : 6.0;
+                const w = comp.def.w || 60;
+                const availW = (comp.def.type === 'Contactor' && w > 100) ? w * 0.45 : (comp.def.type === 'ContactorTherm' ? w * 0.37 : w * 0.86);
+                const byWidth = (availW / Math.max(4, maxLine)) * 1.32;
+                const byLines = lines.length > 1 ? 5.8 : 7.0;
+                return Math.max(3.6, Math.min(7.0, byWidth, byLines));
+            };
+
             function placeOrMoveBoxCompAtClientXY(clientX, clientY) {
                 const curZone = getActiveZone();
                 if (curZone.type !== 'box' || (mode !== 'build' && mode !== 'move')) return false;
@@ -5725,11 +5808,73 @@
                 return false;
             }
 
+            Component.prototype.setPosition = function(rowOrTY, xPxOrTX) {
+                if (this.isBoxTile) {
+                    this.tileY = Math.max(0, Math.round(rowOrTY));
+                    this.tileX = Math.max(0, Math.round(xPxOrTX));
+                    this.elem.style.left = `calc(${this.tileX * GRID.tilePx}px * var(--board-scale))`;
+                    this.elem.style.top  = `calc(${this.tileY * GRID.tilePx}px * var(--board-scale))`;
+                } else {
+                    this.row = rowOrTY; this.xPx = xPxOrTX;
+                    this.elem.style.left = `calc(${this.xPx}px * var(--board-scale))`;
+                    this.elem.style.top  = `calc(${(this.row * GRID.rowH + GRID.railCenter)}px * var(--board-scale))`;
+                }
+            };
+
+            const origUpdateNameFontSize = Component.prototype.updateNameFontSize;
+            Component.prototype.updateNameFontSize = function() {
+                if (this.isBoxTile) {
+                    const infoEl = this.dom?.info;
+                    if (!infoEl) return;
+                    const clean = (this.name || '').replace(/\n/g, ' ').trim();
+                    infoEl.innerText = clean;
+                    const { tw } = this.getTileDims();
+                    const availPx = tw * GRID.tilePx - 6;
+                    const fs = Math.max(4.1, Math.min(5.5, (availPx / Math.max(6, clean.length)) * 1.15));
+                    infoEl.style.fontSize = `calc(${fs.toFixed(2)}px * var(--comp-scale))`;
+                    return;
+                }
+                origUpdateNameFontSize.call(this);
+            };
+
+            const origUpdateVisuals = Component.prototype.updateVisuals;
+            Component.prototype.updateVisuals = function(force = false) {
+                origUpdateVisuals.call(this, force);
+                if (!this.isBoxTile && this.dom?.xttag) {
+                    const extCn = this.terminals['2']?.connections.find(cn => components.find(x => x.id === cn.c)?.zoneId !== this.zoneId);
+                    const extDev = extCn ? components.find(x => x.id === extCn.c) : null;
+                    if (extDev) {
+                        this.dom.xttag.style.display = 'block';
+                        this.dom.xttag.innerText = formatXtShortTag(extDev, extCn.t);
+                        this.dom.xttag.title = `🔗 Подключено: ${extDev.name.replace(/\n/g, ' ')} (кл. ${extCn.t})`;
+                    } else {
+                        this.dom.xttag.style.display = 'none';
+                    }
+                }
+            };
+
             const origRender = Component.prototype.render;
             Component.prototype.render = function() {
                 this._lastVKey = '';
                 if (!this.isBoxTile) {
                     origRender.call(this);
+                    this.elem.style.left = `calc(${this.xPx}px * var(--board-scale))`;
+                    this.elem.style.top  = `calc(${(this.row * GRID.rowH + GRID.railCenter)}px * var(--board-scale))`;
+                    (this.def.terms || []).forEach(t => {
+                        const termObj = this.terminals[t.id];
+                        if (!termObj) return;
+                        const isStagger = (typeof t.stagger === 'number');
+                        const termOffset = isStagger ? (t.stagger === 1 ? -1.5 : -7.5) : -6.5;
+                        const lblOffset  = isStagger ? (t.stagger === 1 ? 10.0 : 4.5)  : 4.5;
+                        if (t.p === 'top') {
+                            termObj.elem.style.top = `calc(${termOffset}px * var(--comp-scale))`;
+                            if (termObj.lblElem) termObj.lblElem.style.top = `calc(${lblOffset}px * var(--comp-scale))`;
+                        } else {
+                            termObj.elem.style.bottom = `calc(${termOffset}px * var(--comp-scale))`;
+                            if (termObj.lblElem) termObj.lblElem.style.bottom = `calc(${lblOffset}px * var(--comp-scale))`;
+                        }
+                    });
+                    this.updateNameFontSize();
                     this.updateVisuals(true);
                     return;
                 }
@@ -5737,8 +5882,8 @@
                 const isKip = (this.def.cat === 'box_kip' || this.def.cat === 'box_sw' || this.def.isInlineValve);
                 this.elem.style.display = (this.zoneId === activeZoneId) ? 'block' : 'none';
                 this.elem.className = `component box-tile-comp ${isKip ? 'kip-layer' : ''}`;
-                this.elem.style.left   = `calc(${this.tileX * GRID.tilePx}px * var(--comp-scale))`;
-                this.elem.style.top    = `calc(${this.tileY * GRID.tilePx}px * var(--comp-scale))`;
+                this.elem.style.left   = `calc(${this.tileX * GRID.tilePx}px * var(--board-scale))`;
+                this.elem.style.top    = `calc(${this.tileY * GRID.tilePx}px * var(--board-scale))`;
                 this.elem.style.width  = `calc(${tw * GRID.tilePx}px * var(--comp-scale))`;
                 this.elem.style.height = `calc(${th * GRID.tilePx}px * var(--comp-scale))`;
 
@@ -5795,7 +5940,6 @@
                     e.stopPropagation();
                     if (suppressNextClick || e.target.closest('.nozzle')) return;
 
-                    // Если активна установка прибора или уже выбран прибор для переноса — укладываем его в точку клика
                     if ((mode === 'build' && buildItem) || (mode === 'move' && movingComp)) {
                         placeOrMoveBoxCompAtClientXY(e.clientX, e.clientY);
                         return;
@@ -5859,7 +6003,6 @@
                 this.updateVisuals(true);
             };
 
-            // Очистка привязок датчиков при удалении аппарата
             const origDeleteComp = deleteComp;
             window.deleteComp = deleteComp = function(id) {
                 components.forEach(c => {
@@ -5868,7 +6011,6 @@
                 return origDeleteComp(id);
             };
 
-            // Автозакрытие панели расключки при выборе другого инструмента в Блок-боксе
             const origSetMode = setMode;
             window.setMode = setMode = function(m) {
                 if (activeRasklComp && m !== 'raskl' && m !== 'wire') {
@@ -5879,10 +6021,10 @@
                 return origSetMode(m);
             };
 
-            // Сохранение меток расключки XT при любом изменении масштаба
             window.applyZoom = function() {
                 cachedScale = +(getBaseScale() * userZoom).toFixed(3);
                 document.documentElement.style.setProperty('--comp-scale', cachedScale);
+                document.documentElement.style.setProperty('--board-scale', cachedScale);
                 const lbl = document.getElementById('btn-zoom-lbl');
                 if (lbl) lbl.innerText = `${Math.round(userZoom * 100)}%`;
                 drawBackground();
@@ -5906,7 +6048,6 @@
                 return { x: lx * s, y: ly * s, lx, ly, dir: nz.dir || 'R' };
             };
 
-            // Привязка датчика при установке на аппарат или врезке в трубу (БЕЗ сброса существующей привязки при переносе на свободные клетки!)
             window.trySpliceCompIntoPipe = function(comp) {
                 if (!comp || !comp.isBoxTile) return;
                 const { tw, th } = comp.getTileDims();
@@ -5926,7 +6067,6 @@
                         showNotification(`🔧 Датчик ${comp.name.replace(/\n/g,' ')} подключен к трубопроводу!`);
                         return;
                     }
-                    // Если датчик перенесли на свободное место, его текущая привязка (attachedVesselId / attachedPipeId) СОХРАНЯЕТСЯ!
                     return;
                 }
                 const hitPipe = findPipeUnderBoxRect(comp.tileX, comp.tileY, tw, th, comp.id);
@@ -5945,7 +6085,6 @@
                 }
             };
 
-            // Подсветка «🔧 НА АППАРАТ» при наведении датчика на колонну/емкость/насос
             boardInner.addEventListener('mousemove', (e) => {
                 const curZone = getActiveZone();
                 if (curZone.type !== 'box' || (mode !== 'build' && mode !== 'move')) return;
@@ -5963,7 +6102,6 @@
                 }
             });
 
-            // Привязка штуцера ВРЕЗКА (MOUNT) к любому штуцеру аппарата
             const origHandleNozzleClick = handleNozzleClick;
             window.handleNozzleClick = function(comp, nzId, elem) {
                 if (mode === 'pipe' && selectedNozzle) {
@@ -5992,7 +6130,6 @@
                 return origHandleNozzleClick(comp, nzId, elem);
             };
 
-            // Трассировка труб без «мертвых петель» при расстоянии 1–2 блока и с выходом на 1 клетку
             window.computePipePoints = function(p, pipeIdx, usedVertX) {
                 const comp1 = components.find(x => x.id === p.c1), comp2 = components.find(x => x.id === p.c2);
                 if (!comp1 || !comp2) return [];
@@ -6081,14 +6218,12 @@
                 return [{ x: p1.x, y: p1.y }, s1, { x: midX, y: s1.y }, { x: midX, y: s2.y }, s2, { x: p2.x, y: p2.y }];
             };
 
-            // Отрисовка импульсных линий от датчиков к ближайшей стенке аппарата + пропуск клика сквозь трубу при установке/перемещении
             const origDrawWires = drawWires;
             window.drawWires = function() {
                 origDrawWires();
                 if (getActiveZone().type !== 'box') return;
                 const s = cachedScale;
 
-                // Чтобы труба не блокировала установку/перенос приборов поверх нее в режимах build и move
                 svg.querySelectorAll('.pipe-hit').forEach(hitEl => {
                     const origClick = hitEl.onclick;
                     hitEl.onclick = (e) => {
@@ -6118,7 +6253,6 @@
                 });
             };
 
-            // Настройка подключения датчика в «⚙️ Номиналы»: только оборудование + плашка «🚰 Участок трубы» без номера
             window.attachSensorToTarget = (targetType, targetId) => {
                 if (!activeParamsComp) return;
                 if (targetType === 'vessel') {
@@ -6161,7 +6295,6 @@
                 if (doneBtn) doneBtn.insertAdjacentHTML('beforebegin', mountHtml);
             };
 
-            // Расчет напора (бар) и максимальной подачи (м³/ч) насоса/компрессора в зависимости от его типа и мощности ratedKw
             function getPumpHydraulicsByPower(comp) {
                 const kw = Math.max(0.2, comp.state.ratedKw ?? comp.def.defKw ?? 4.0);
                 const id = comp.defId;
@@ -6186,7 +6319,6 @@
                 };
             }
 
-            // Точный гидравлический, тепловой и КИПиА солвер
             function runRefinedHydraulicsAndSensors() {
                 components.forEach(c => {
                     if (!c.isBoxTile) return;
@@ -6433,7 +6565,6 @@
                         maxTankLvl = st.levelPct;
                     }
 
-                    // Точный расчет датчиков 4–20 мА, зондов САУ-М6 и дискретных реле (с очисткой удаленных объектов)
                     if (c.def.type === 'Sensor420' || c.def.sensorKind || c.defId === 'CondSensor') {
                         if (st.attachedVesselId && !components.some(x => x.id === st.attachedVesselId && x.zoneId === c.zoneId)) st.attachedVesselId = null;
                         if (st.attachedPipeId && !pipes.some(p => p.id === st.attachedPipeId && p.zoneId === c.zoneId)) st.attachedPipeId = null;
@@ -6511,7 +6642,6 @@
                 });
             }
 
-            // Перехватываем engineTick, чтобы наш точный гидравлический и КИПиА расчет шел ПЕРЕД электрическим солвером
             const origEngineTick = engineTick;
             engineTick = window.engineTick = function() {
                 runRefinedHydraulicsAndSensors();
